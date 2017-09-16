@@ -1,0 +1,47 @@
+/**
+ * Copyright 2017 Ambud Sharma
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ * 		http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "com.srotya.minuteman.rpc";
+option optimize_for = SPEED;
+
+package rpcs;
+
+service ReplicationService {
+
+	rpc RequestBatchReplication (BatchDataRequest) returns (BatchDataResponse) {}
+
+}
+
+message BatchDataRequest {
+
+	int32 offset = 1;
+	int64 messageId = 2;
+	string nodeId = 3;
+	int32 maxBytes = 4;
+	int32 fileId = 5;
+
+}
+
+message BatchDataResponse {
+
+	bytes data = 1;
+	int32 nextOffset = 2;
+	int64 messageId = 3;
+	int32 fileId = 4;
+
+}
