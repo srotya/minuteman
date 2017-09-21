@@ -23,16 +23,6 @@ import java.io.IOException;
  */
 public class FileUtils {
 	
-	public static void ls(File file) throws IOException {
-		if (file.isDirectory()) {
-			for (File file2 : file.listFiles()) {
-				System.out.println(file2.getAbsolutePath());
-			}
-		} else {
-			System.out.println(file.getAbsolutePath());
-		}
-	}
-
 	public static void delete(File file) throws IOException {
 		if (file.isDirectory()) {
 			// directory is empty, then delete it

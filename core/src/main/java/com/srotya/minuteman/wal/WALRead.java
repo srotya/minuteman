@@ -21,6 +21,7 @@ package com.srotya.minuteman.wal;
 public class WALRead {
 
 	private int nextOffset;
+	private int commitOffset;
 	private byte[] data;
 	private int fileId;
 
@@ -62,6 +63,20 @@ public class WALRead {
 
 	public int getFileId() {
 		return fileId;
+	}
+
+	/**
+	 * @return the commitOffset
+	 */
+	public int getCommitOffset() {
+		return commitOffset;
+	}
+
+	/**
+	 * @param commitOffset the commitOffset to set
+	 */
+	public void setCommitOffset(int commitOffset) {
+		this.commitOffset = commitOffset;
 	}
 
 }
