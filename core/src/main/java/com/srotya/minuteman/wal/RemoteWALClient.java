@@ -17,12 +17,13 @@ package com.srotya.minuteman.wal;
 
 import java.io.IOException;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import com.google.protobuf.ByteString;
+import com.srotya.minuteman.cluster.WALManager;
 import com.srotya.minuteman.rpc.BatchDataRequest;
 import com.srotya.minuteman.rpc.BatchDataResponse;
 import com.srotya.minuteman.rpc.ReplicationServiceGrpc;
@@ -35,16 +36,9 @@ import io.grpc.ManagedChannel;
  */
 public class RemoteWALClient extends WALClient {
 
-	public static final String MAX_FETCH_BYTES = "max.fetch.bytes";
 	private static final Logger logger = Logger.getLogger(RemoteWALClient.class.getName());
-	private WAL wal;
-	private AtomicBoolean ctrl;
 	private AtomicInteger counter;
 	private ReplicationServiceBlockingStub stub;
-	private String nodeId;
-	private int offset;
-	private int fileid;
-	private int maxFetchBytes;
 	private AtomicLong metricRequestTime;
 	private AtomicLong metricWriteTime;
 	private AtomicLong loopCounter;
@@ -56,71 +50,59 @@ public class RemoteWALClient extends WALClient {
 		loopCounter = new AtomicLong();
 	}
 
-	public RemoteWALClient configure(Map<String, String> conf, String nodeId, ManagedChannel channel, WAL wal, String routeKey)
-			throws IOException {
-		this.wal = wal;
+	public RemoteWALClient configure(Map<String, String> conf, String nodeId, ManagedChannel channel, WAL wal,
+			String routeKey) throws IOException {
+		super.configure(conf, nodeId, wal);
 		this.routeKey = routeKey;
-		this.maxFetchBytes = Integer.parseInt(conf.getOrDefault(MAX_FETCH_BYTES, String.valueOf(1024 * 1024)));
-		this.nodeId = nodeId;
 		this.counter = new AtomicInteger(0);
-		this.ctrl = new AtomicBoolean(true);
-		this.stub = ReplicationServiceGrpc.newBlockingStub(channel).withCompression("gzip");
-		// Executors.newScheduledThreadPool(1).scheduleAtFixedRate(() -> {
-		// long l = loopCounter.getAndSet(0);
-		// if (l == 0) {
-		// l = 1;
-		// }
-		// System.out.println("Avg RequestTime:" + metricRequestTime.getAndSet(0) / l +
-		// "ms\tAvg WriteTime:"
-		// + metricWriteTime.getAndSet(0) / l + "ms");
-		// }, 0, 1, TimeUnit.SECONDS);
+		this.stub = ReplicationServiceGrpc.newBlockingStub(channel).withCompression(
+				conf.getOrDefault(WALManager.CLUSTER_GRPC_COMPRESSION, WALManager.DEFAULT_CLUSTER_GRPC_COMPRESSION));
 		return this;
 	}
 
 	@Override
-	public void run() {
-		offset = wal.getCurrentOffset();
-		fileid = wal.getSegmentCounter();
-		while (ctrl.get()) {
-			try {
-				loopCounter.incrementAndGet();
-				logger.fine("CLIENT: Requesting data:" + offset);
-				long ts = System.currentTimeMillis();
-				BatchDataRequest request = BatchDataRequest.newBuilder().setFileId(fileid).setNodeId(nodeId)
-						.setOffset(offset).setMaxBytes(maxFetchBytes).setRouteKey(routeKey).build();
-				BatchDataResponse response = stub.requestBatchReplication(request);
-				ts = System.currentTimeMillis() - ts;
-				metricRequestTime.getAndAdd(ts);
-				if (response.getData() == null || response.getData().isEmpty()) {
-					logger.fine("CLIENT: No data to replicate, delaying poll, offset:" + offset);
-					Thread.sleep(1);
-				} else {
-					ts = System.currentTimeMillis();
-					try {
-						wal.write(response.getData().toByteArray(), false);
-					} catch (Exception e) {
-						logger.log(Level.SEVERE, "Failure to write to local WAL", e);
-					}
-					ts = System.currentTimeMillis() - ts;
-					metricWriteTime.getAndAdd(ts);
-					logger.fine("CLIENT: Client received:" + response.getData().size() + " bytes\tfileid:"
-							+ response.getFileId());
-					counter.addAndGet(response.getData().size());
-					wal.setCommitOffset(response.getCommitOffset());
-				}
-				if (response.getFileId() > fileid) {
-					logger.fine("CLIENT: File rotation requested:" + offset + "\t" + fileid);
-				}
-				offset = response.getNextOffset();
-				fileid = response.getFileId();
-			} catch (Exception e) {
-				logger.log(Level.FINE, "Failure to replicate WAL", e);
+	public void iterate() {
+		try {
+			loopCounter.incrementAndGet();
+			logger.fine("CLIENT: Requesting data:" + offset);
+			long ts = System.currentTimeMillis();
+			BatchDataRequest request = BatchDataRequest.newBuilder().setSegmentId(segmentId).setNodeId(nodeId)
+					.setOffset(offset).setMaxBytes(maxFetchBytes).setRouteKey(routeKey).build();
+			BatchDataResponse response = stub.requestBatchReplication(request);
+			ts = System.currentTimeMillis() - ts;
+			metricRequestTime.getAndAdd(ts);
+			if (response.getDataList() == null || response.getDataList().isEmpty()) {
+				logger.fine("CLIENT: No data to replicate, delaying poll, offset:" + offset);
+				Thread.sleep(retryWait);
+			} else {
+				ts = System.currentTimeMillis();
 				try {
-					Thread.sleep(2000);
-				} catch (InterruptedException e1) {
-					// TODO Auto-generated catch block
-					e1.printStackTrace();
+					for (ByteString byteString : response.getDataList()) {
+						wal.write(byteString.toByteArray(), false);
+					}
+				} catch (Exception e) {
+					logger.log(Level.SEVERE, "Failure to write to local WAL", e);
 				}
+				ts = System.currentTimeMillis() - ts;
+				metricWriteTime.getAndAdd(ts);
+				logger.fine("CLIENT: Client received:" + response.getDataList().size() + " messages \t fileId:"
+						+ response.getSegmentId());
+				counter.addAndGet(response.getDataList().size());
+				wal.setCommitOffset(response.getCommitOffset());
+				wal.setCommitSegment(response.getCommitSegment());
+			}
+			if (response.getSegmentId() > segmentId) {
+				logger.fine("CLIENT: File rotation requested:" + offset + "\t" + segmentId);
+			}
+			offset = response.getNextOffset();
+			segmentId = response.getSegmentId();
+		} catch (Exception e) {
+			logger.log(Level.SEVERE, "Failure to replicate WAL", e);
+			try {
+				Thread.sleep(errorRetryWait);
+			} catch (InterruptedException e1) {
+				logger.severe("CLIENT: Remote client interrupt received, breaking loop");
+				stop();
 			}
 		}
 	}
@@ -137,7 +119,4 @@ public class RemoteWALClient extends WALClient {
 		return wal;
 	}
 
-	public void stop() {
-		ctrl.set(false);
-	}
 }

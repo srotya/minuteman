@@ -17,6 +17,8 @@ package com.srotya.minuteman.connectors;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -25,6 +27,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import com.srotya.minuteman.cluster.Node;
+import com.srotya.minuteman.cluster.Replica;
 import com.srotya.minuteman.cluster.WALManager;
 
 import io.atomix.AtomixReplica;
@@ -47,6 +50,15 @@ import io.atomix.variables.DistributedValue;
  */
 public class AtomixConnector extends ClusterConnector {
 
+	public static final String FETCH_RETRY_INTERVAL = "cluster.atomix.fetch.retry.interval.ms";
+	public static final String CLUSTER_ATOMIX_BOOTSTRAP_ADDRESSES = "cluster.atomix.bootstrap.addresses";
+	public static final String CLUSTER_ATOMIX_BOOTSTRAP = "cluster.atomix.bootstrap";
+	public static final String CLUSTER_ATOMIX_HEARTBEAT_INTERVAL = "cluster.atomix.heartbeat.interval";
+	public static final String CLUSTER_ATOMIX_ELECTION_TIMEOUT = "cluster.atomix.election.timeout";
+	public static final String CLUSTER_ATOMIX_STORAGE_DIRECTORY = "cluster.atomix.storage.directory";
+	public static final String CLUSTER_ATOMIX_STORAGE_LEVEL = "cluster.atomix.storage.level";
+	public static final String CLUSTER_ATOMIX_PORT = "cluster.atomix.port";
+	public static final String CLUSTER_ATOMIX_HOST = "cluster.atomix.host";
 	private static final String TABLE = "table";
 	private static final String BROADCAST_GROUP = "controller";
 	private static final Logger logger = Logger.getLogger(AtomixConnector.class.getName());
@@ -54,42 +66,47 @@ public class AtomixConnector extends ClusterConnector {
 	private boolean isBootstrap;
 	private String address;
 	private int port;
-	private volatile boolean leader;
-	private Node localNode;
+	private volatile boolean isLeader;
 	private DistributedGroup group;
 	protected Node coordinator;
+	private int fetchRetryInterval;
 
 	@Override
 	public void init(Map<String, String> conf) throws Exception {
 		AtomixReplica.Builder builder = AtomixReplica
-				.builder(new Address(conf.getOrDefault("cluster.atomix.host", "localhost"),
-						Integer.parseInt(conf.getOrDefault("cluster.atomix.port", "8901"))));
+				.builder(new Address(conf.getOrDefault(CLUSTER_ATOMIX_HOST, "localhost"),
+						Integer.parseInt(conf.getOrDefault(CLUSTER_ATOMIX_PORT, "8901"))));
 		Builder storageBuilder = Storage.builder();
 
 		storageBuilder
-				.withStorageLevel(StorageLevel.valueOf(conf.getOrDefault("cluster.atomix.storage.level", "MEMORY")));
-		storageBuilder.withDirectory(conf.getOrDefault("cluster.atomix.storage.directory", "/tmp/sidewinder-atomix"));
+				.withStorageLevel(StorageLevel.valueOf(conf.getOrDefault(CLUSTER_ATOMIX_STORAGE_LEVEL, "MEMORY")));
+		storageBuilder.withDirectory(conf.getOrDefault(CLUSTER_ATOMIX_STORAGE_DIRECTORY, "/tmp/sidewinder-atomix"));
 
+		fetchRetryInterval = Integer.parseInt(conf.getOrDefault(FETCH_RETRY_INTERVAL, "1000"));
 		atomix = builder.withStorage(storageBuilder.build()).withSessionTimeout(Duration.ofSeconds(10))
 				.withGlobalSuspendTimeout(Duration.ofMinutes(2)).withType(Type.ACTIVE)
-				.withElectionTimeout(Duration
-						.ofSeconds(Integer.parseInt(conf.getOrDefault("cluster.atomix.election.timeout", "10"))))
-				.withHeartbeatInterval(Duration
-						.ofSeconds(Integer.parseInt(conf.getOrDefault("cluster.atomix.heartbeat.interval", "5"))))
+				.withElectionTimeout(
+						Duration.ofSeconds(Integer.parseInt(conf.getOrDefault(CLUSTER_ATOMIX_ELECTION_TIMEOUT, "10"))))
+				.withHeartbeatInterval(
+						Duration.ofSeconds(Integer.parseInt(conf.getOrDefault(CLUSTER_ATOMIX_HEARTBEAT_INTERVAL, "5"))))
 				.build();
 
 		atomix.serializer().register(Node.class, NodeSerializer.class);
+		atomix.serializer().register(Replica.class, ReplicaSerializer.class);
 
-		this.isBootstrap = Boolean.parseBoolean(conf.getOrDefault("cluster.atomix.bootstrap", "true"));
+		this.isBootstrap = Boolean.parseBoolean(conf.getOrDefault(CLUSTER_ATOMIX_BOOTSTRAP, "true"));
+		String[] bootstraps = conf.getOrDefault(CLUSTER_ATOMIX_BOOTSTRAP_ADDRESSES, "localhost:8901").split(",");
+		List<Address> bootstrapNodes = new ArrayList<>();
+		for (String addr : bootstraps) {
+			bootstrapNodes.add(new Address(addr));
+		}
 		if (isBootstrap) {
 			logger.info("Joining cluster as bootstrap node");
-			atomix.bootstrap(new Address(conf.getOrDefault("cluster.atomix.bootstrap.host", "localhost"),
-					Integer.parseInt(conf.getOrDefault("cluster.atomix.bootstrap.port", "8901")))).join();
+			atomix.bootstrap(bootstrapNodes).join();
 			atomix.getValue(TABLE);
 		} else {
 			logger.info("Joining cluster as a member node");
-			atomix.join(new Address(conf.getOrDefault("cluster.atomix.bootstrap.host", "localhost"),
-					Integer.parseInt(conf.getOrDefault("cluster.atomix.bootstrap.port", "8901")))).get();
+			atomix.join(bootstrapNodes).get();
 		}
 		logger.info("Atomix clustering initialized");
 	}
@@ -104,9 +121,9 @@ public class AtomixConnector extends ClusterConnector {
 
 			@Override
 			public void accept(Term t) {
+				logger.info("Completed leader election, new leader is => " + t.leader().id());
 				if (isLocal(t.leader().id())) {
-					logger.info("Completed leader election:" + t.leader().id());
-					leader = true;
+					isLeader = true;
 					try {
 						manager.makeCoordinator();
 					} catch (Exception e) {
@@ -114,8 +131,8 @@ public class AtomixConnector extends ClusterConnector {
 						logger.severe("Error making corrdinator");
 					}
 				} else {
-					logger.info("Leader election completed, " + t.leader().id() + " is the leader");
-					leader = false;
+					isLeader = false;
+					logger.info("This node is not the leader");
 				}
 				Node node = manager.getNodeMap().get(t.leader().id());
 				if (node == null) {
@@ -124,6 +141,7 @@ public class AtomixConnector extends ClusterConnector {
 				}
 				manager.setCoordinator(node);
 				coordinator = node;
+				logger.info("Node:" + address + ":" + port + "\t leader status:" + isLeader);
 			}
 		});
 
@@ -139,7 +157,6 @@ public class AtomixConnector extends ClusterConnector {
 					// TODO Auto-generated catch block
 					e.printStackTrace();
 				}
-				manager.getNodeMap().put(t.id(), node);
 			}
 
 		});
@@ -149,14 +166,12 @@ public class AtomixConnector extends ClusterConnector {
 			@Override
 			public void accept(GroupMember t) {
 				logger.info("Node left:" + t.id());
-				Node node = buildNode(t.id());
 				try {
-					manager.removeNode(node);
+					manager.removeNode(t.id());
 				} catch (Exception e) {
 					// TODO Auto-generated catch block
 					e.printStackTrace();
 				}
-				manager.getNodeMap().remove(t.id());
 			}
 		});
 
@@ -175,7 +190,7 @@ public class AtomixConnector extends ClusterConnector {
 
 		try {
 			getAtomix().getValue(TABLE).get().onChange(event -> {
-				logger.info("Route table updated by leader:" + event.newValue());
+				// logger.info("Route table updated by leader:" + event.newValue());
 			});
 		} catch (InterruptedException | ExecutionException e) {
 			logger.log(Level.SEVERE, "Error updating route table on node " + address + ":" + port, e);
@@ -184,7 +199,7 @@ public class AtomixConnector extends ClusterConnector {
 
 	@Override
 	public boolean isCoordinator() {
-		return leader;
+		return isLeader;
 	}
 
 	public AtomixReplica getAtomix() {
@@ -206,14 +221,24 @@ public class AtomixConnector extends ClusterConnector {
 	}
 
 	@Override
-	public Object fetchRoutingTable() {
+	public Object fetchRoutingTable(int retryCount) {
 		try {
 			logger.info("Fetching route table info from metastore");
 			DistributedValue<Object> value = getAtomix().getValue(TABLE).get(2, TimeUnit.SECONDS);
 			logger.info("Fetched route table info from metastore:" + value.get());
 			return value.get().get();
 		} catch (Exception e) {
-			logger.log(Level.SEVERE, "Failed to fetch routing table", e);
+			logger.log(Level.SEVERE,
+					"Failed to fetch routing table on node " + address + ":" + port + " reason:" + e.getMessage());
+			if (retryCount > 0) {
+				logger.info("Failed to fetch routing table reason:" + e.getMessage() + " will retry in 1s");
+				try {
+					Thread.sleep(fetchRetryInterval);
+				} catch (InterruptedException e1) {
+					return null;
+				}
+				return fetchRoutingTable(retryCount - 1);
+			}
 		}
 		return null;
 	}
@@ -221,12 +246,7 @@ public class AtomixConnector extends ClusterConnector {
 	@Override
 	public void updateTable(Object table) throws Exception {
 		getAtomix().getValue(TABLE).get().set(table);
-		logger.info("Updated route table in atomix");
-	}
-
-	@Override
-	public Node getLocalNode() {
-		return localNode;
+		logger.fine("Updated route table in atomix");
 	}
 
 	@SuppressWarnings("rawtypes")
@@ -247,9 +267,42 @@ public class AtomixConnector extends ClusterConnector {
 
 	}
 
+	@SuppressWarnings("rawtypes")
+	public static class ReplicaSerializer implements TypeSerializer<Replica> {
+
+		@Override
+		public Replica read(Class<Replica> arg0, BufferInput buf, Serializer arg2) {
+			Replica replica = new Replica();
+			replica.setLeaderAddress(buf.readString());
+			replica.setLeaderPort(buf.readInt());
+			replica.setReplicaAddress(buf.readString());
+			replica.setReplicaPort(buf.readInt());
+			replica.setRouteKey(buf.readString());
+			replica.setIsr(buf.readBoolean());
+			return replica;
+		}
+
+		@Override
+		public void write(Replica replica, BufferOutput buf, Serializer arg2) {
+			buf.writeUTF8(replica.getLeaderAddress());
+			buf.writeInt(replica.getLeaderPort());
+			buf.writeUTF8(replica.getReplicaAddress());
+			buf.writeInt(replica.getReplicaPort());
+			buf.writeUTF8(replica.getRouteKey());
+			buf.writeBoolean(replica.isIsr());
+		}
+
+	}
+
 	@Override
 	public Node getCoordinator() {
 		return coordinator;
+	}
+
+	@Override
+	public void stop() throws Exception {
+		atomix.leave().get();
+		atomix.shutdown();
 	}
 
 }

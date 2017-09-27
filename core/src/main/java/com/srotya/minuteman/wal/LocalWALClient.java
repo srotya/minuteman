@@ -16,8 +16,8 @@
 package com.srotya.minuteman.wal;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -27,57 +27,55 @@ import java.util.logging.Logger;
  */
 public class LocalWALClient extends WALClient {
 
-	public static final String MAX_FETCH_BYTES = "max.fetch.bytes";
+	public static final String WAL_LOCAL_READ_MODE = "wal.local.read.mode";
 	private static final Logger logger = Logger.getLogger(LocalWALClient.class.getName());
-	private WAL wal;
-	private AtomicBoolean ctrl;
 	private AtomicInteger counter;
-	private String nodeId;
-	private int offset;
-	private int fileId;
-	private int maxFetchBytes;
+	private boolean readCommitted;
 
 	public LocalWALClient() {
 	}
 
-	public LocalWALClient configure(Map<String, String> conf, String nodeId, WAL localWAL) throws IOException {
-		this.wal = localWAL;
-		this.maxFetchBytes = Integer.parseInt(conf.getOrDefault(MAX_FETCH_BYTES, String.valueOf(1024 * 1024)));
-		this.nodeId = nodeId;
+	public LocalWALClient configure(Map<String, String> conf, String nodeId, WAL localWAL, Object storageObject)
+			throws IOException {
+		super.configure(conf, nodeId, localWAL);
 		this.counter = new AtomicInteger(0);
-		this.ctrl = new AtomicBoolean(true);
-		offset = 4;
+		String readMode = conf.getOrDefault(WAL_LOCAL_READ_MODE, "uncommitted").toLowerCase();
+		switch (readMode) {
+		case "committed":
+			readCommitted = true;
+			break;
+		case "uncommitted":
+			readCommitted = false;
+			break;
+		}
+
 		return this;
 	}
 
 	@Override
-	public void run() {
+	public void iterate() {
 		try {
-			while (ctrl.get()) {
-				try {
-					WALRead read = wal.read(nodeId, offset, maxFetchBytes, fileId);
-					if (read.getData() == null) {
-						// System.err.println(
-						// "No data:" + nodeId + "\t" + fileId + "\tRead offset:" + read.getNextOffset()
-						// + "\t" + wal.getSegmentCounter()
-						// + "\t" + wal.getCurrentOffset() + "\t" + wal.getCommitOffset());
-						Thread.sleep(100);
-					} else {
-						processData(read.getData());
-						counter.incrementAndGet();
-					}
-					offset = read.getNextOffset();
-					if (read.getFileId() > fileId) {
-						offset = 4;
-						fileId = read.getFileId();
-					}
-				} catch (Exception e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				}
+			WALRead read = wal.read(nodeId, offset, maxFetchBytes, segmentId, readCommitted);
+			if (read.getData() == null || read.getData().isEmpty()) {
+				Thread.sleep(retryWait);
+			} else {
+				logger.fine("Received read data:" + read.getData().size() + "\t" + offset);
+				processData(read.getData());
+				counter.incrementAndGet();
+				logger.fine("Read:" + read.getData().size() + "\t\t\t" + offset + "\t\t\t" + wal.getCommitOffset()
+						+ "\t\t\t" + segmentId);
+			}
+			offset = read.getNextOffset();
+			if (read.getSegmentId() != segmentId) {
+				segmentId = read.getSegmentId();
 			}
 		} catch (Exception e) {
-			logger.log(Level.SEVERE, "Failure to replicate WAL", e);
+			logger.log(Level.SEVERE, "Failure to replay WAL locally", e);
+			try {
+				Thread.sleep(errorRetryWait);
+			} catch (InterruptedException e1) {
+				stop();
+			}
 		}
 	}
 
@@ -93,11 +91,8 @@ public class LocalWALClient extends WALClient {
 		return wal;
 	}
 
-	public void stop() {
-		ctrl.set(false);
-	}
-
-	public void processData(byte[] data) {
+	public void processData(List<byte[]> list) {
 		// do nothing here
 	}
+
 }

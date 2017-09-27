@@ -19,16 +19,8 @@ import com.srotya.minuteman.wal.WAL;
 import com.srotya.minuteman.wal.WALClient;
 
 /**
- * A node is a logical member of the Sidewinder cluster where one more more
+ * A node is a logical member of the Minuteman cluster where one more more
  * nodes form a cluster.
- * 
- * The reason node is referred to as a logical member is because it may
- * represent a physical node or a virtual node that is created to for the
- * purpose of even distribution of data.
- * 
- * The {@link Replica} object simply provides a mechanism for the
- * {@link RoutingStrategy} to compute placement location and provides a helper
- * {@link EndpointService} concept to avoid using yet another lookup table.
  * 
  * @author ambud
  */
@@ -36,20 +28,15 @@ public class Replica {
 
 	private String routeKey;
 	private String replicaAddress;
-	private String replicaNodeKey;
 	private int replicaPort;
-	private String leaderNodeKey;
 	private String leaderAddress;
 	private int leaderPort;
+	private boolean isr;
 	private transient WAL wal;
 	private transient WALClient client;
 	private transient WALClient local;
-	
-	public Replica() {
-	}
 
-	public Replica(String replicaNodeKey) {
-		this.replicaNodeKey = replicaNodeKey;
+	public Replica() {
 	}
 
 	/**
@@ -60,7 +47,8 @@ public class Replica {
 	}
 
 	/**
-	 * @param replicaAddress the replicaAddress to set
+	 * @param replicaAddress
+	 *            the replicaAddress to set
 	 */
 	public void setReplicaAddress(String replicaAddress) {
 		this.replicaAddress = replicaAddress;
@@ -70,14 +58,7 @@ public class Replica {
 	 * @return the replicaNodeKey
 	 */
 	public String getReplicaNodeKey() {
-		return replicaNodeKey;
-	}
-
-	/**
-	 * @param replicaNodeKey the replicaNodeKey to set
-	 */
-	public void setReplicaNodeKey(String replicaNodeKey) {
-		this.replicaNodeKey = replicaNodeKey;
+		return replicaAddress + ":" + replicaPort;
 	}
 
 	/**
@@ -88,7 +69,8 @@ public class Replica {
 	}
 
 	/**
-	 * @param replicaPort the replicaPort to set
+	 * @param replicaPort
+	 *            the replicaPort to set
 	 */
 	public void setReplicaPort(int replicaPort) {
 		this.replicaPort = replicaPort;
@@ -98,15 +80,7 @@ public class Replica {
 	 * @return the leaderNodeKey
 	 */
 	public String getLeaderNodeKey() {
-		return leaderNodeKey;
-	}
-
-	/**
-	 * @param leaderNodeKey
-	 *            the leaderNodeKey to set
-	 */
-	public void setLeaderNodeKey(String leaderNodeKey) {
-		this.leaderNodeKey = leaderNodeKey;
+		return leaderAddress + ":" + leaderPort;
 	}
 
 	/**
@@ -201,10 +175,25 @@ public class Replica {
 	}
 
 	/**
-	 * @param local the local to set
+	 * @param local
+	 *            the local to set
 	 */
 	public void setLocal(WALClient local) {
 		this.local = local;
+	}
+
+	/**
+	 * @return the isr
+	 */
+	public boolean isIsr() {
+		return isr;
+	}
+
+	/**
+	 * @param isr the isr to set
+	 */
+	public void setIsr(boolean isr) {
+		this.isr = isr;
 	}
 
 	/* (non-Javadoc)
@@ -212,9 +201,8 @@ public class Replica {
 	 */
 	@Override
 	public String toString() {
-		return "Replica [routeKey=" + routeKey + ", replicaAddress=" + replicaAddress + ", replicaNodeKey="
-				+ replicaNodeKey + ", replicaPort=" + replicaPort + ", leaderNodeKey=" + leaderNodeKey
-				+ ", leaderAddress=" + leaderAddress + ", leaderPort=" + leaderPort + "]";
+		return "Replica [routeKey=" + routeKey + ", replicaAddress=" + replicaAddress + ", replicaPort=" + replicaPort
+				+ ", leaderAddress=" + leaderAddress + ", leaderPort=" + leaderPort + ", isr=" + isr + "]";
 	}
 
 }

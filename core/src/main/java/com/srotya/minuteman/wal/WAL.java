@@ -43,7 +43,7 @@ public interface WAL {
 
 	void write(byte[] data, boolean flush) throws IOException;
 
-	WALRead read(String followerId, int offset, int maxBytes, int fileId) throws IOException;
+	WALRead read(String followerId, int offset, int maxBytes, int fileId, boolean readCommitted) throws IOException;
 
 	int getSegmentCounter();
 
@@ -56,6 +56,10 @@ public interface WAL {
 	void setCommitOffset(int commitOffset);
 
 	int getCommitOffset();
+	
+	int getCommitSegment();
+	
+	void setCommitSegment(int commitSegment);
 
 	boolean isIsr(String followerId);
 

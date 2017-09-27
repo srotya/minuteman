@@ -17,6 +17,7 @@ package com.srotya.minuteman.rpc;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -57,12 +58,14 @@ public class ReplicationServiceImpl extends ReplicationServiceImplBase {
 			WAL wal = mgr.getWAL(request.getRouteKey());
 			if (wal != null) {
 				WALRead read = wal.read(request.getNodeId(), request.getOffset(), request.getMaxBytes(),
-						request.getFileId());
+						request.getSegmentId(), false);
 				builder.setNextOffset(read.getNextOffset()).setCommitOffset(read.getCommitOffset());
 				if (read.getData() != null) {
-					builder.setData(ByteString.copyFrom(read.getData()));
+					for (byte[] data : read.getData()) {
+						builder.addData(ByteString.copyFrom(data));
+					}
 				}
-				builder.setFileId(read.getFileId());
+				builder.setSegmentId(read.getSegmentId());
 				responseObserver.onNext(builder.build());
 			} else {
 				builder.setNextOffset(-1).setResponseCode(404);
@@ -98,11 +101,9 @@ public class ReplicationServiceImpl extends ReplicationServiceImplBase {
 		try {
 			Replica replica = new Replica();
 			replica.setLeaderAddress(request.getLeaderAddress());
-			replica.setLeaderNodeKey(request.getLeaderNodeKey());
 			replica.setLeaderPort(request.getLeaderPort());
 			replica.setReplicaAddress(request.getReplicaAddress());
 			replica.setReplicaPort(request.getReplicaPort());
-			replica.setReplicaNodeKey(request.getReplicaNodeKey());
 			replica.setRouteKey(request.getRouteKey());
 			logger.info("Request to add replica:" + request.getRouteKey());
 			mgr.replicaUpdated(replica);
@@ -140,4 +141,21 @@ public class ReplicationServiceImpl extends ReplicationServiceImplBase {
 		responseObserver.onCompleted();
 	}
 
+	@Override
+	public void updateIsr(IsrUpdateRequest request, StreamObserver<GenericResponse> responseObserver) {
+		String routeKey = request.getRouteKey();
+		Map<String, Boolean> isrUpdateMap = request.getIsrMapMap();
+		com.srotya.minuteman.rpc.GenericResponse.Builder builder = GenericResponse.newBuilder();
+		try {
+			mgr.updateReplicaIsrStatus(routeKey, isrUpdateMap);
+			builder.setResponseCode(200);
+		} catch (Exception e) {
+			e.printStackTrace();
+			logger.log(Level.SEVERE, "Failed to update ISR status for coordinator", e);
+			builder.setResponseCode(500);
+			builder.setResponseString(e.getMessage());
+		}
+		responseObserver.onNext(builder.build());
+		responseObserver.onCompleted();
+	}
 }

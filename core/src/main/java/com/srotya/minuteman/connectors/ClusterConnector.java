@@ -49,11 +49,13 @@ public abstract class ClusterConnector {
 
 	public abstract boolean isCoordinator();
 
-	public abstract Object fetchRoutingTable();
+	public abstract Object fetchRoutingTable(int retryCount);
 
 	public abstract void updateTable(Object table) throws Exception;
 
-	public abstract Node getLocalNode();
+	public abstract Node getCoordinator();
+	
+	public abstract void stop() throws Exception;
 
 	public void updateReplicaRoute(WALManager mgr, Replica replica, boolean delete) throws Exception {
 		logger.info(
@@ -85,8 +87,6 @@ public abstract class ClusterConnector {
 			return null;
 		}
 	}
-
-	public abstract Node getCoordinator();
 
 	public Node buildNode(String id) {
 		String[] split = id.split(":");

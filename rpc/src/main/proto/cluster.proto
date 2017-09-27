@@ -30,6 +30,15 @@ service ReplicationService {
 	rpc AddRoute (RouteRequest) returns (RouteResponse) {}
 	
 	rpc AddReplica (ReplicaRequest) returns (GenericResponse) {}
+	
+	rpc UpdateIsr (IsrUpdateRequest) returns (GenericResponse) {}
+
+}
+
+message IsrUpdateRequest {
+
+	string routeKey = 1;
+	map<string, bool> isrMap = 2;
 
 }
 
@@ -80,17 +89,18 @@ message BatchDataRequest {
 	int32 offset = 1;
 	string nodeId = 2;
 	int32 maxBytes = 3;
-	int32 fileId = 4;
+	int32 segmentId = 4;
 	string routeKey = 5; 
 
 }
 
 message BatchDataResponse {
 
-	bytes data = 1;
+	repeated bytes data = 1;
 	int32 nextOffset = 2;
-	int32 fileId = 3;
-	int32 commitOffset = 4;
-	int32 responseCode = 5;
+	int32 segmentId = 3;
+	int32 responseCode = 4;
+	int32 commitOffset = 5;
+	int32 commitSegment = 6;
 
 }

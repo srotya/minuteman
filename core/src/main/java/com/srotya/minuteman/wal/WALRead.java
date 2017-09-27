@@ -15,6 +15,8 @@
  */
 package com.srotya.minuteman.wal;
 
+import java.util.List;
+
 /**
  * @author ambud
  */
@@ -22,8 +24,12 @@ public class WALRead {
 
 	private int nextOffset;
 	private int commitOffset;
-	private byte[] data;
-	private int fileId;
+	private int commitSegment;
+	private List<byte[]> data;
+	private int segmentId;
+	
+	public WALRead() {
+	}
 
 	/**
 	 * @return the nextOffset
@@ -32,8 +38,8 @@ public class WALRead {
 		return nextOffset;
 	}
 
-	public void setFileId(int fileCounter) {
-		fileId = fileCounter;
+	public void setSegmentId(int segmentCounter) {
+		segmentId = segmentCounter;
 	}
 
 	/**
@@ -48,7 +54,7 @@ public class WALRead {
 	/**
 	 * @return the data
 	 */
-	public byte[] getData() {
+	public List<byte[]> getData() {
 		return data;
 	}
 
@@ -56,13 +62,13 @@ public class WALRead {
 	 * @param data
 	 *            the data to set
 	 */
-	public WALRead setData(byte[] data) {
+	public WALRead setData(List<byte[]> data) {
 		this.data = data;
 		return this;
 	}
 
-	public int getFileId() {
-		return fileId;
+	public int getSegmentId() {
+		return segmentId;
 	}
 
 	/**
@@ -77,6 +83,20 @@ public class WALRead {
 	 */
 	public void setCommitOffset(int commitOffset) {
 		this.commitOffset = commitOffset;
+	}
+
+	/**
+	 * @return the commitSegment
+	 */
+	public int getCommitSegment() {
+		return commitSegment;
+	}
+
+	/**
+	 * @param commitSegment the commitSegment to set
+	 */
+	public void setCommitSegment(int commitSegment) {
+		this.commitSegment = commitSegment;
 	}
 
 }

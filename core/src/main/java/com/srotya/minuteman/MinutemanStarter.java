@@ -34,22 +34,26 @@ import com.srotya.minuteman.rpc.GenericResponse;
 import com.srotya.minuteman.rpc.ReplicationServiceGrpc;
 import com.srotya.minuteman.rpc.ReplicationServiceGrpc.ReplicationServiceBlockingStub;
 import com.srotya.minuteman.utils.FileUtils;
+import com.srotya.minuteman.wal.WAL;
+import com.srotya.minuteman.wal.WALClient;
 
 public class MinutemanStarter {
 
 	public static void main(String[] args) throws Exception {
 		String string = "helodasewrwermfjfsf9s90fasfweknwqjnqwnerqwher8werjwnerknwerkwlejrklwjrjwlkjijoiwerwerwer343tdasd";
-		for (int i = 0; i < 4; i++) {
+		for (int i = 0; i < 6; i++) {
 			string += string;
 		}
 		System.out.println(string.length());
-//		System.exit(0);
+		// System.exit(0);
 		FileUtils.delete(new File("target/node" + args[0]));
 		ClusterConnector connector;
 		Map<String, String> conf = new HashMap<>();
 		conf.put("cluster.atomix.port", args[0]);
 		conf.put("cluster.atomix.bootstrap", args[1]);
 		conf.put("cluster.grpc.port", args[2]);
+		conf.put(WAL.WAL_ISR_THRESHOLD, String.valueOf(1024 * 1024 * 64));
+		conf.put(WALClient.MAX_FETCH_BYTES, String.valueOf(1024 * 1024 * 2));
 		conf.put("wal.dir", "target/node" + args[0]);
 		try {
 			connector = new AtomixConnector();
@@ -57,11 +61,11 @@ public class MinutemanStarter {
 		} catch (Exception e) {
 			throw new IOException(e);
 		}
-		
+
 		ScheduledExecutorService es = Executors.newScheduledThreadPool(1);
 
 		WALManager walManager = new WALManagerImpl();
-		walManager.init(conf, connector, es);
+		walManager.init(conf, connector, es, null);
 		System.out.print("Please enter route key name:");
 		Scanner sc = new Scanner(System.in);
 		if (sc.hasNext()) {

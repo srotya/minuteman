@@ -33,7 +33,6 @@ public class ConfigConnector extends ClusterConnector {
 	private List<Node> slavesList;
 	private boolean isMaster;
 	private Node masterNode;
-	private Node localNode;
 
 	public ConfigConnector() {
 		slavesList = new ArrayList<>();
@@ -57,10 +56,8 @@ public class ConfigConnector extends ClusterConnector {
 	public void initializeRouterHooks(WALManager manager) throws IOException {
 		String node = manager.getAddress() + ":" + manager.getPort();
 		if (node.equals(masterNode.getNodeKey())) {
-			localNode = masterNode;
 			isMaster = true;
 		} else {
-			localNode = buildNode(node);
 			isMaster = false;
 		}
 		System.out.println("Master:" + masterNode + "\t Local:" + node + "\t" + isMaster);
@@ -91,7 +88,7 @@ public class ConfigConnector extends ClusterConnector {
 	}
 
 	@Override
-	public Object fetchRoutingTable() {
+	public Object fetchRoutingTable(int retryCount) {
 		return getSlavesList();
 	}
 
@@ -100,13 +97,12 @@ public class ConfigConnector extends ClusterConnector {
 	}
 
 	@Override
-	public Node getLocalNode() {
-		return localNode;
+	public Node getCoordinator() {
+		return masterNode;
 	}
 
 	@Override
-	public Node getCoordinator() {
-		return masterNode;
+	public void stop() throws Exception {
 	}
 
 }

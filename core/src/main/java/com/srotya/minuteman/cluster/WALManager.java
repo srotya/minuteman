@@ -26,10 +26,6 @@ import com.srotya.minuteman.wal.MappedWAL;
 import com.srotya.minuteman.wal.WAL;
 
 /**
- * Routing Engine provides the abstraction to stitch together the
- * {@link RoutingStrategy}s, clustering subsystem like Atomix or Zookeeper and
- * methods to forward data to the appropriate positions.
- * 
  * @author ambud
  */
 public abstract class WALManager {
@@ -38,20 +34,26 @@ public abstract class WALManager {
 	public static final String CLUSTER_GRPC_PORT = "cluster.grpc.port";
 	public static final String DEFAULT_CLUSTER_HOST = "localhost";
 	public static final String CLUSTER_HOST = "cluster.host";
+	public static final String CLUSTER_GRPC_COMPRESSION = "cluster.grpc.compression";
+	public static final String DEFAULT_CLUSTER_GRPC_COMPRESSION = "gzip";
+	public static final String WAL_CLIENT_CLASS = "wal.client.class";
 	private int port;
 	private String address;
 	private Map<String, String> conf;
 	private Map<String, Node> nodeMap;
 	private Node coordinatorKey;
 	private ScheduledExecutorService bgtask;
-	
+	protected Object storageObject;
+
 	public WALManager() {
 		this.nodeMap = new HashMap<>();
 	}
 
-	public void init(Map<String, String> conf, ClusterConnector connector, ScheduledExecutorService bgtask) throws Exception {
+	public void init(Map<String, String> conf, ClusterConnector connector, ScheduledExecutorService bgtask, Object storageObject)
+			throws Exception {
 		this.conf = conf;
 		this.bgtask = bgtask;
+		this.storageObject = storageObject;
 		this.port = Integer.parseInt(conf.getOrDefault(CLUSTER_GRPC_PORT, DEFAULT_CLUSTER_GRPC_PORT));
 		this.address = conf.getOrDefault(CLUSTER_HOST, DEFAULT_CLUSTER_HOST);
 	}
@@ -83,33 +85,42 @@ public abstract class WALManager {
 	public String getThisNodeKey() {
 		return address + ":" + port;
 	}
-	
+
 	public Node getCoordinator() {
 		return coordinatorKey;
 	}
-	
+
 	public void setCoordinator(Node node) {
-		this.coordinatorKey = node;
+		Node n = getNodeMap().get(node.getNodeKey());
+		if (n == null) {
+			n = node;
+			getNodeMap().put(node.getNodeKey(), node);
+		}
+		this.coordinatorKey = n;
 	}
 
 	public abstract void addNode(Node node) throws IOException;
 
-	public abstract void removeNode(Node node) throws Exception;
+	public abstract void removeNode(String nodeId) throws Exception;
 
 	public abstract void makeCoordinator() throws Exception;
-	
+
 	public abstract WAL getWAL(String key) throws IOException;
 
 	public abstract List<Replica> addRoutableKey(String routingKey, int replicationFactor) throws Exception;
 
 	public abstract void resume() throws IOException;
-	
+
 	public abstract void replicaUpdated(Replica node) throws IOException;
 
 	public abstract void replicaRemoved(Replica node) throws Exception;
 
 	public abstract Object getRoutingTable();
 
-	public abstract void stop() throws InterruptedException;
+	public abstract void stop() throws InterruptedException, IOException;
+
+	public abstract String getReplicaLeader(String routeKey);
+
+	public abstract void updateReplicaIsrStatus(String routeKey, Map<String, Boolean> isrUpdateMap) throws Exception;
 
 }

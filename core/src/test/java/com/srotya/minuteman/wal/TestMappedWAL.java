@@ -24,6 +24,7 @@ import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel.MapMode;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -46,9 +47,9 @@ public class TestMappedWAL {
 		conf.put(MappedWAL.WAL_SEGMENT_SIZE, String.valueOf(1024 * 1024 * 2));
 		wal.configure(conf, es);
 		File[] listFiles = new File(walDir).listFiles();
-		assertEquals(1, listFiles.length);
-		assertEquals(MappedWAL.getSegmentFileName(walDir, 1), listFiles[0].getPath().replace("\\", "/"));
-		assertEquals(1024 * 1024 * 2, listFiles[0].length());
+		assertEquals(2, listFiles.length);
+		assertEquals(MappedWAL.getSegmentFileName(walDir, 1), listFiles[1].getPath().replace("\\", "/"));
+		assertEquals(1024 * 1024 * 2, listFiles[1].length());
 	}
 
 	@Test
@@ -65,20 +66,21 @@ public class TestMappedWAL {
 			wal.write(str.getBytes(), false);
 		}
 		wal.flush();
-		int expectedBytes = 7 * 1000 + 4;
+		int expectedBytes = 11 * 1000 + 4;
 		RandomAccessFile raf = new RandomAccessFile(MappedWAL.getSegmentFileName(walDir, 1), "r");
 		MappedByteBuffer map = raf.getChannel().map(MapMode.READ_ONLY, 0, expectedBytes);
 		raf.close();
 		map.getInt();
 		for (int i = 0; i < 1000; i++) {
-			byte[] dst = new byte[7];
 			try {
+				byte[] dst = new byte[7];
+				map.getInt();
 				map.get(dst);
+				assertEquals("test" + String.format("%03d", i), new String(dst));
 			} catch (Exception e) {
 				System.out.println("Marker:" + i);
 				throw e;
 			}
-			assertEquals("test" + String.format("%03d", i), new String(dst));
 		}
 	}
 
@@ -95,10 +97,10 @@ public class TestMappedWAL {
 			String str = ("test" + String.format("%03d", i));
 			wal.write(str.getBytes(), false);
 		}
-		WALRead read = wal.read("local", 0, 10000, 1);
-		ByteBuffer buf = ByteBuffer.wrap(read.getData());
-		buf.getInt();
+		WALRead read = wal.read("local", 4, 100000, 1, false);
+		List<byte[]> data = read.getData();
 		for (int i = 0; i < 1000; i++) {
+			ByteBuffer buf = ByteBuffer.wrap(data.get(i));
 			byte[] dst = new byte[7];
 			try {
 				buf.get(dst);
@@ -127,15 +129,16 @@ public class TestMappedWAL {
 		for (int i = 0; i < 1000; i++) {
 			String str = ("test" + String.format("%03d", i));
 			wal.write(str.getBytes(), false);
-			total += str.length();
+			total += str.length() + Integer.BYTES;
 		}
 		wal.flush();
 		assertEquals(total, wal.getOffset());
 		// let ISR check thread mark this follower as not ISR
-		WALRead read = wal.read("f1", 0, 1024 * 1024, 1);
-		assertEquals(total, read.getData().length);
+		WALRead read = wal.read("f1", 4, 1024 * 1024, 1, false);
+		assertEquals(7000, read.getData().size() * 7);
+		assertEquals(false, wal.isIsr("f1"));
+		assertEquals(4, wal.getFollowerOffset("f1"));
 		assertEquals(0, read.getCommitOffset());
-		assertEquals(0, wal.getFollowerOffset("f1"));
 		total = 0;
 		for (int i = 0; i < 1000; i++) {
 			String str = ("test" + String.format("%03d", i));
@@ -145,26 +148,27 @@ public class TestMappedWAL {
 		wal.flush();
 		Thread.sleep(1000);
 		assertEquals(false, wal.isIsr("f1"));
-		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, 1);
-		assertEquals(total, read.getData().length);
-		assertEquals(total + 4, wal.getFollowerOffset("f1"));
-		total *= 2;
-		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, 1);
+		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, read.getSegmentId(), false);
+		assertEquals(1000, read.getData().size());
+		assertEquals(11000 + 4, wal.getFollowerOffset("f1"));
+		total = 11000 * 2;
+		total += 4;
+		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, read.getSegmentId(), false);
 		// let ISR check thread run and mark this follower as ISR
 		Thread.sleep(1000);
 		assertTrue(read.getData() == null);
-		assertEquals(total + 4, wal.getFollowerOffset("f1"));
-		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, 1);
+		assertEquals(total, wal.getFollowerOffset("f1"));
+		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, read.getSegmentId(), false);
 		assertTrue(read.getData() == null);
-		assertEquals(total + 4, wal.getFollowerOffset("f1"));
-		assertEquals(total + 4, read.getCommitOffset());
+		assertEquals(total, wal.getFollowerOffset("f1"));
+		assertEquals(total, read.getCommitOffset());
 
 		for (int i = 0; i < 1000; i++) {
 			String str = ("test" + String.format("%03d", i));
 			wal.write(str.getBytes(), false);
 		}
-		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, 1);
-		assertEquals(total + 4, read.getCommitOffset());
+		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, 1, false);
+		assertEquals(total, read.getCommitOffset());
 	}
 
 	@Test
@@ -180,41 +184,45 @@ public class TestMappedWAL {
 			String str = ("test" + String.format("%03d", i));
 			wal.write(str.getBytes(), false);
 		}
-		assertEquals(4, wal.getSegmentCounter());
-		WALRead read = wal.read("local", 0, 10000, 1);
-		ByteBuffer buf = ByteBuffer.wrap(read.getData());
-		buf.getInt();
-		for (int i = 0; i < 713; i++) {
-			byte[] dst = new byte[7];
+		assertEquals(5, wal.getSegmentCounter());
+		WALRead read = wal.read("local", 4, 10000, 1, false);
+		List<byte[]> data = read.getData();
+		// buf.getInt();
+		assertEquals(454, data.size());
+		for (int i = 0; i < 454; i++) {
 			try {
+				ByteBuffer buf = ByteBuffer.wrap(data.get(i));
+				byte[] dst = new byte[7];
 				buf.get(dst);
+				assertEquals("test" + String.format("%03d", i), new String(dst));
 			} catch (Exception e) {
-				fail("Shouldn't throw exception:" + e.getMessage());
+				e.printStackTrace();
+				fail("Shouldn't throw exception:" + e.getMessage() + "\t" + i);
 				throw e;
 			}
-			assertEquals("test" + String.format("%03d", i), new String(dst));
 		}
 		assertEquals(-1, wal.getFollowerOffset("f1"));
-		assertEquals(2, read.getFileId());
+		assertEquals(2, read.getSegmentId());
 		assertEquals(4, read.getNextOffset());
-		read = wal.read("local", read.getNextOffset(), 10000, read.getFileId());
-		buf = ByteBuffer.wrap(read.getData());
-		assertEquals(4993, read.getData().length);
-		for (int i = 0; i < 287; i++) {
-			byte[] dst = new byte[7];
+		read = wal.read("local", read.getNextOffset(), 10000, read.getSegmentId(), false);
+		data = read.getData();
+		assertEquals(454, read.getData().size());
+		for (int i = 0; i < 454; i++) {
+			ByteBuffer buf = ByteBuffer.wrap(data.get(i));
 			try {
+				byte[] dst = new byte[7];
 				buf.get(dst);
+				assertEquals("test" + String.format("%03d", i + 454), new String(dst));
 			} catch (Exception e) {
 				fail("Shouldn't throw exception:" + e.getMessage());
 				throw e;
 			}
-			assertEquals("test" + String.format("%03d", i + 713), new String(dst));
 		}
-		read = wal.read("local", 4, 10000, read.getFileId());
-		read = wal.read("local", read.getNextOffset(), 10000, read.getFileId());
-		assertEquals(4, read.getFileId());
-		read = wal.read("local", 4, 10000, 0);
-		assertEquals(1, read.getFileId());
+		read = wal.read("local", read.getNextOffset(), 10000, read.getSegmentId(), false);
+		read = wal.read("local", read.getNextOffset(), 10000, read.getSegmentId(), false);
+		assertEquals(5, read.getSegmentId());
+		read = wal.read("local", 4, 10000, 0, false);
+		assertEquals(1, read.getSegmentId());
 	}
 
 	@Test
@@ -231,14 +239,14 @@ public class TestMappedWAL {
 			String str = ("test" + String.format("%03d", i));
 			wal.write(str.getBytes(), false);
 		}
-		wal.read("f2", 4, 100, 1);
+		wal.read("f2", 4, 100, 1, false);
 		wal.close();
 		es1.shutdownNow();
 		es1 = Executors.newScheduledThreadPool(1);
 		wal = new MappedWAL();
 		wal.configure(conf, es1);
-		assertEquals(4, wal.getSegmentCounter());
-		wal.read("f2", 4, 100, 1);
+		assertEquals(5, wal.getSegmentCounter());
+		wal.read("f2", 4, 100, 1, false);
 		assertEquals(1, wal.getFollowers().size());
 	}
 }

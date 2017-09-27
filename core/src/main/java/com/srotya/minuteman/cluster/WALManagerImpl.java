@@ -23,15 +23,19 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Queue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
 import com.srotya.minuteman.connectors.ClusterConnector;
+import com.srotya.minuteman.rpc.GenericResponse;
+import com.srotya.minuteman.rpc.IsrUpdateRequest;
+import com.srotya.minuteman.rpc.ReplicationServiceGrpc;
+import com.srotya.minuteman.rpc.ReplicationServiceGrpc.ReplicationServiceBlockingStub;
 import com.srotya.minuteman.rpc.ReplicationServiceImpl;
 import com.srotya.minuteman.wal.LocalWALClient;
 import com.srotya.minuteman.wal.RemoteWALClient;
@@ -51,10 +55,12 @@ public class WALManagerImpl extends WALManager {
 	private WriteLock write = lock.writeLock();
 	private Map<String, Replica> localReplicaTable;
 	private Map<String, List<Replica>> routeTable;
-	private Queue<Node> nodes;
+	private List<Node> nodes;
 	private ClusterConnector connector;
 	private Server server;
 	private Class<LocalWALClient> walClientClass;
+	private long allocator;
+	private int isrUpdateFrequency;
 
 	public WALManagerImpl() {
 		super();
@@ -65,23 +71,83 @@ public class WALManagerImpl extends WALManager {
 
 	@SuppressWarnings("unchecked")
 	@Override
-	public void init(Map<String, String> conf, ClusterConnector connector, ScheduledExecutorService bgTasks)
+	public void init(Map<String, String> conf, ClusterConnector connector, ScheduledExecutorService bgTasks, Object storageObject)
 			throws Exception {
-		super.init(conf, connector, bgTasks);
+		super.init(conf, connector, bgTasks, storageObject);
 		this.connector = connector;
-		connector.initializeRouterHooks(this);
 		walClientClass = (Class<LocalWALClient>) Class
-				.forName(conf.getOrDefault("wal.class", LocalWALClient.class.getName()));
+				.forName(conf.getOrDefault(WAL_CLIENT_CLASS, LocalWALClient.class.getName()));
+		connector.initializeRouterHooks(this);
 		server = ServerBuilder.forPort(getPort()).decompressorRegistry(DecompressorRegistry.getDefaultInstance())
 				.addService(new ReplicationServiceImpl(this)).build().start();
 		logger.info("Listening for GRPC requests on port:" + getPort());
+		isrUpdateFrequency = Integer.parseInt(conf.getOrDefault(WAL.WAL_ISRCHECK_FREQUENCY, "10"));
+		bgTasks.scheduleAtFixedRate(() -> {
+			if (connector.getCoordinator() != null) {
+				ReplicationServiceBlockingStub stub = ReplicationServiceGrpc
+						.newBlockingStub(connector.getCoordinator().getChannel());
+				for (Entry<String, Replica> entry : localReplicaTable.entrySet()) {
+					if (isLeader(entry.getValue())) {
+						Map<String, Boolean> isrMap = new HashMap<>();
+						WAL wal = entry.getValue().getWal();
+						logger.fine("Updating ISRs for(" + entry.getKey() + ") followers:" + wal.getFollowers());
+						for (String followerId : wal.getFollowers()) {
+							boolean isr = wal.isIsr(followerId);
+							isrMap.put(followerId, isr);
+						}
+						GenericResponse response = stub.updateIsr(
+								IsrUpdateRequest.newBuilder().setRouteKey(entry.getKey()).putAllIsrMap(isrMap).build());
+						if (response.getResponseCode() == 200) {
+							logger.info("Updated ISRs with coordinator for routeKey:" + entry.getKey());
+						} else {
+							logger.severe(
+									"ISR update with coordinator failed for routeKey:" + entry.getKey() + " reason:"
+											+ response.getResponseString() + " code:" + response.getResponseCode());
+						}
+					}
+				}
+			}
+		}, 0, isrUpdateFrequency, TimeUnit.SECONDS);
+	}
+
+	@Override
+	public void updateReplicaIsrStatus(String routingKey, Map<String, Boolean> isrUpdateMap) throws Exception {
+		if (!connector.isCoordinator()) {
+			throw new UnsupportedOperationException("This(" + getThisNodeKey() + ") is not a coordinator("
+					+ getCoordinator().getNodeKey() + ") node, can't perform ISR updates");
+		}
+		write.lock();
+		try {
+			List<Replica> list = routeTable.get(routingKey);
+			if (list != null) {
+				for (Replica replica : list) {
+					Boolean status = isrUpdateMap.get(replica.getReplicaNodeKey());
+					if (status != null) {
+						replica.setIsr(status);
+					} else {
+						logger.severe("Missing ISR status for replica(" + replica.getReplicaNodeKey()
+								+ ") for route key(" + routingKey + ")");
+					}
+				}
+				connector.updateTable(routeTable);
+				// System.out.println("Key:" + routingKey + "\t\tLEADER:" +
+				// list.get(0).getLeaderNodeKey());
+				// for (Replica r : list) {
+				// System.out.println("\t" + r.getReplicaNodeKey() + "\t ISR:" + r.isIsr());
+				// }
+			}
+		} catch (Exception e) {
+			throw e;
+		} finally {
+			write.unlock();
+		}
 	}
 
 	@Override
 	public List<Replica> addRoutableKey(String routingKey, int replicationFactor) throws Exception {
 		if (!connector.isCoordinator()) {
-			throw new UnsupportedOperationException(
-					"This is not a coordinator node, can't perform route modifications");
+			throw new UnsupportedOperationException("This(" + getThisNodeKey() + ") is not a coordinator("
+					+ getCoordinator().getNodeKey() + ") node, can't perform route modifications");
 		}
 		if (replicationFactor > nodes.size()) {
 			throw new IllegalArgumentException("Fewer nodes(" + nodes.size()
@@ -95,28 +161,28 @@ public class WALManagerImpl extends WALManager {
 				// logger.info("Nodes in the cluster:" + nodes);
 				list = new ArrayList<>();
 				routeTable.put(routingKey, list);
-				Replica leader = new Replica();
+				Replica replica = new Replica();
 				Node candidate = getNode();
-				nodeToReplica(routingKey, leader, candidate, candidate);
-				list.add(0, leader);
-				if (isLocal(leader)) {
-					replicaUpdated(leader);
-				} else {
-					connector.updateReplicaRoute(this, leader, false);
-				}
+				nodeToReplica(routingKey, replica, candidate, candidate);
+				list.add(0, replica);
+
 				for (int i = 1; i < replicationFactor; i++) {
 					Node node = getNode();
-					Replica replica = new Replica();
+					replica = new Replica();
 					nodeToReplica(routingKey, replica, candidate, node);
 					list.add(i, replica);
-					if (isLocal(leader)) {
-						replicaUpdated(leader);
-					} else {
-						connector.updateReplicaRoute(this, replica, false);
-					}
+				}
+				logger.info("Route key:" + routingKey + " has replicas:"
+						+ list.stream().map(n -> n.getReplicaNodeKey()).collect(Collectors.toList()) + " leader:"
+						+ list.get(0).getReplicaNodeKey());
+				for (Replica r : list) {
+					updateReplica(r);
 				}
 				// tell the cluster nodes about this
 				connector.updateTable(routeTable);
+				// offset the allocator by 1 so that leaders are assigned in a round-robin
+				// fashion
+				allocator++;
 			} else {
 				// routetable for key exists
 			}
@@ -129,111 +195,145 @@ public class WALManagerImpl extends WALManager {
 		}
 	}
 
+	private void updateReplica(Replica r) throws IOException, Exception {
+		if (isLocal(r)) {
+			logger.info(r.getReplicaNodeKey() + " is local on: " + getThisNodeKey());
+			replicaUpdated(r);
+		} else {
+			logger.info(r.getReplicaNodeKey() + " is NOT local on: " + getThisNodeKey());
+			connector.updateReplicaRoute(this, r, false);
+		}
+	}
+
 	private Node getNode() {
-		Node node = nodes.poll();
-		nodes.add(node);
+		Node node = nodes.get((int) (allocator++ % nodes.size()));
+		logger.info("NODE:" + node.getNodeKey());
 		return node;
 	}
 
 	private void nodeToReplica(String routingKey, Replica replica, Node leader, Node follower) {
 		replica.setLeaderAddress(leader.getAddress());
-		replica.setLeaderNodeKey(leader.getNodeKey());
 		replica.setLeaderPort(leader.getPort());
 		replica.setRouteKey(routingKey);
 		replica.setReplicaAddress(follower.getAddress());
 		replica.setReplicaPort(follower.getPort());
-		replica.setReplicaNodeKey(follower.getNodeKey());
 	}
 
 	@Override
 	public void addNode(Node node) throws IOException {
 		write.lock();
-		logger.info("Adding node(" + node.getNodeKey() + ") to WALManager");
-		nodes.add(node);
-		getNodeMap().put(node.getNodeKey(), node);
-		logger.info("Node(" + node.getNodeKey() + ") added to WALManager");
+		if (getNodeMap().get(node.getNodeKey()) == null) {
+			logger.info("Adding node(" + node.getNodeKey() + ") to WALManager");
+			nodes.add(node);
+			getNodeMap().put(node.getNodeKey(), node);
+			logger.info("Node(" + node.getNodeKey() + ") added to WALManager");
+		} else {
+			logger.info("Node(" + node.getNodeKey() + ") is already present");
+		}
 		write.unlock();
 	}
 
 	@Override
-	public void removeNode(Node node) throws Exception {
+	public void removeNode(String nodeId) throws Exception {
 		write.lock();
 		try {
-			nodes.remove(node);
 			// if coordinator then fix the routes of all other followers
 			if (connector.isCoordinator()) {
 				for (Entry<String, List<Replica>> entry : routeTable.entrySet()) {
 					List<Replica> value = entry.getValue();
 					Replica leader = value.get(0);
-					if (node.getNodeKey().equals(leader.getLeaderNodeKey())) {
+					if (nodeId.equals(leader.getLeaderNodeKey())) {
 						value.remove(0);
-						leader = value.get(0);
-						if (isLocal(leader)) {
-							replicaUpdated(leader);
-						} else {
-							connector.updateReplicaRoute(this, leader, false);
+						// find next ISR
+						leader = getFirstIsr(value);
+						if (value.isEmpty() || leader == null) {
+							// no suitable nodes left for this route key
+							logger.info("No suitable replicas left for this route key:" + entry.getKey());
+							continue;
 						}
+						leader.setLeaderAddress(leader.getReplicaAddress());
+						leader.setLeaderPort(leader.getReplicaPort());
+						updateReplica(leader);
 						for (int i = 0; i < value.size(); i++) {
 							Replica replica = value.get(i);
 							replica.setLeaderAddress(leader.getLeaderAddress());
 							replica.setLeaderPort(leader.getLeaderPort());
-							replica.setLeaderNodeKey(leader.getLeaderNodeKey());
-							// tell the replica that the leader has changed
-							connector.updateReplicaRoute(this, replica, false);
+							updateReplica(replica);
 						}
 					}
 				}
 				connector.updateTable(routeTable);
 			}
-			logger.info("Removing node from WALManager");
-			Node node2 = getNodeMap().remove(node.getNodeKey());
+			logger.info("Removing node(" + nodeId + ") from WALManager");
+			Node node2 = getNodeMap().remove(nodeId);
+			nodes.remove(node2);
 			if (node2 != null) {
 				for (Iterator<Entry<String, Replica>> iterator = localReplicaTable.entrySet().iterator(); iterator
 						.hasNext();) {
 					Entry<String, Replica> entry = iterator.next();
-					if (node.getNodeKey().equals(entry.getValue().getLeaderNodeKey())) {
+					if (nodeId.equals(entry.getValue().getLeaderNodeKey())) {
 						entry.getValue().getClient().stop();
 						// TODO delete wal
 						iterator.remove();
 					}
 				}
 			}
-			logger.info("Node removed from WALManager");
+			logger.info("Node(" + nodeId + ") removed from WALManager");
 		} finally {
 			write.unlock();
 		}
+	}
+
+	private Replica getFirstIsr(List<Replica> replicas) {
+		for (Replica r : replicas) {
+			if (r.isIsr()) {
+				return r;
+			}
+		}
+		return null;
 	}
 
 	@Override
 	public void replicaUpdated(Replica replica) throws IOException {
 		write.lock();
 		try {
-			logger.info("Replica added:" + replica);
+			logger.info("Replica updated:" + replica.getLeaderNodeKey() + "\t" + "\t node:" + getThisNodeKey());
 			Replica local = localReplicaTable.get(replica.getRouteKey());
 			if (local == null) {
 				local = replica;
 				localReplicaTable.put(replica.getRouteKey(), replica);
 				replica.setWal(super.initializeWAL(replica.getRouteKey()));
 			} else {
-				local.getClient().stop();
+				if (local.getClient() != null) {
+					local.getClient().stop();
+				}
 			}
-			// check if WAL is local; this is true only if this node is the
-			// leader
-			if (!isLocal(local)) {
+			// check if this node is the leader for this WAL
+			if (!isLeader(local)) {
+				// initialize a remote WAL client to copy data from the leader
 				Node node = getNodeMap().get(replica.getLeaderNodeKey());
+				logger.info("Node leader update:" + getThisNodeKey() + "\tReplica leader:"
+						+ (node != null ? node.getNodeKey() : "null") + "\t" + replica.getLeaderNodeKey() + "\t"
+						+ local.getWal() + "\t" + local.getRouteKey());
 				local.setClient(new RemoteWALClient().configure(getConf(), getThisNodeKey(), node.getChannel(),
-						replica.getWal(), replica.getRouteKey()));
-				LocalWALClient client = walClientClass.newInstance();
-				local.setLocal(client.configure(getConf(), getThisNodeKey(), replica.getWal()));
-				Thread th = new Thread(local.getLocal());
+						local.getWal(), local.getRouteKey()));
+				Thread th = new Thread(local.getClient());
+				th.setDaemon(true);
 				th.start();
-			} else {
-				LocalWALClient client = walClientClass.newInstance();
-				local.setClient(client.configure(getConf(), getThisNodeKey(), replica.getWal()));
+				logger.info("Starting replication thread for:" + replica.getRouteKey() + " on replica => "
+						+ local.getReplicaNodeKey());
 			}
-			Thread th = new Thread(local.getClient());
-			th.start();
-			logger.info("Starting replication thread for:" + replica.getRouteKey());
+			// there's no local follower, create one
+			if (local.getLocal() == null) {
+				// local WAL client to replay this data on the local instance
+				LocalWALClient client = walClientClass.newInstance();
+				local.setLocal(client.configure(getConf(), getThisNodeKey(), local.getWal(), storageObject));
+				Thread th = new Thread(local.getLocal());
+				th.setDaemon(true);
+				th.start();
+				logger.info("Starting local follower thread for:" + replica.getRouteKey() + " on replica => "
+						+ local.getReplicaNodeKey());
+			}
 		} catch (InstantiationException | IllegalAccessException e) {
 			throw new IOException(e);
 		} finally {
@@ -241,8 +341,12 @@ public class WALManagerImpl extends WALManager {
 		}
 	}
 
+	private boolean isLeader(Replica replica) {
+		return replica.getLeaderNodeKey().equals(replica.getReplicaNodeKey());
+	}
+
 	private boolean isLocal(Replica replica) {
-		return replica.getLeaderNodeKey().equals(this.getThisNodeKey());
+		return replica.getReplicaNodeKey().equals(this.getThisNodeKey());
 	}
 
 	@Override
@@ -263,14 +367,14 @@ public class WALManagerImpl extends WALManager {
 	@Override
 	public void makeCoordinator() throws Exception {
 		write.lock();
-		routeTable = (Map<String, List<Replica>>) connector.fetchRoutingTable();
+		routeTable = (Map<String, List<Replica>>) connector.fetchRoutingTable(10);
 		logger.info("Fetched latest route table from metastore:" + routeTable);
 		if (routeTable == null) {
 			connector.updateTable(this.routeTable = new HashMap<>());
 			logger.info("No route table in metastore, created an empty one");
 		} else {
-			if (!getCoordinator().equals(connector.getLocalNode())) {
-				removeNode(getCoordinator());
+			if (getCoordinator() != null && !getThisNodeKey().equals(getCoordinator().getNodeKey())) {
+				removeNode(getCoordinator().getNodeKey());
 			} else {
 				logger.warning("Ignoring route table correction because of self last coordinator");
 			}
@@ -285,13 +389,27 @@ public class WALManagerImpl extends WALManager {
 
 	@Override
 	public void stop() throws InterruptedException {
-		server.shutdown().awaitTermination(100, TimeUnit.SECONDS);
+		for (Entry<String, Replica> entry : localReplicaTable.entrySet()) {
+			try {
+				logger.info("Attempting to stop replica:" + entry.getKey() + " on node:" + getThisNodeKey());
+				entry.getValue().getLocal().stop();
+				if (entry.getValue().getClient() != null) {
+					entry.getValue().getClient().stop();
+				}
+				entry.getValue().getWal().close();
+				logger.info("Stopped replica:" + entry.getKey() + " on node:" + getThisNodeKey());
+			} catch (Exception e) {
+				logger.log(Level.SEVERE, "Failed to stop wal:" + entry.getKey() + "\t on replica:"
+						+ entry.getValue().getReplicaNodeKey() + "\tleader:" + entry.getValue().getLeaderNodeKey(), e);
+			}
+		}
+		server.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
 	}
 
 	@SuppressWarnings("unchecked")
 	@Override
 	public void resume() throws IOException {
-		Map<String, List<Replica>> rt = (Map<String, List<Replica>>) connector.fetchRoutingTable();
+		Map<String, List<Replica>> rt = (Map<String, List<Replica>>) connector.fetchRoutingTable(10);
 		if (rt != null) {
 			for (Entry<String, List<Replica>> entry : rt.entrySet()) {
 				for (Replica replica : entry.getValue()) {
@@ -313,6 +431,22 @@ public class WALManagerImpl extends WALManager {
 			return null;
 		}
 		return replica.getWal();
+	}
+
+	@Override
+	public void setCoordinator(Node node) {
+		write.lock();
+		super.setCoordinator(node);
+		write.unlock();
+	}
+
+	@Override
+	public String getReplicaLeader(String routeKey) {
+		Replica replica = localReplicaTable.get(routeKey);
+		if (replica != null) {
+			return replica.getLeaderNodeKey();
+		}
+		return null;
 	}
 
 }
