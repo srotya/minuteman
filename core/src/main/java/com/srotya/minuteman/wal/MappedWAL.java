@@ -124,7 +124,7 @@ public class MappedWAL implements WAL {
 		}
 		metaBuf = metaraf.getChannel().map(MapMode.READ_WRITE, 0, 1024);
 		if (forward) {
-			System.out.println("\n\n Found md file with commit offset\n\n");
+			logger.info("Found md file with commit offset");
 			commitOffset = metaBuf.getInt();
 			commitSegment = metaBuf.getInt();
 		} else {

@@ -191,6 +191,7 @@ public class AtomixConnector extends ClusterConnector {
 		try {
 			getAtomix().getValue(TABLE).get().onChange(event -> {
 				// logger.info("Route table updated by leader:" + event.newValue());
+				manager.setRouteTable(event.newValue());
 			});
 		} catch (InterruptedException | ExecutionException e) {
 			logger.log(Level.SEVERE, "Error updating route table on node " + address + ":" + port, e);

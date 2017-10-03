@@ -123,4 +123,6 @@ public abstract class WALManager {
 
 	public abstract void updateReplicaIsrStatus(String routeKey, Map<String, Boolean> isrUpdateMap) throws Exception;
 
+	public abstract void setRouteTable(Object newValue);
+
 }

@@ -71,8 +71,8 @@ public class WALManagerImpl extends WALManager {
 
 	@SuppressWarnings("unchecked")
 	@Override
-	public void init(Map<String, String> conf, ClusterConnector connector, ScheduledExecutorService bgTasks, Object storageObject)
-			throws Exception {
+	public void init(Map<String, String> conf, ClusterConnector connector, ScheduledExecutorService bgTasks,
+			Object storageObject) throws Exception {
 		super.init(conf, connector, bgTasks, storageObject);
 		this.connector = connector;
 		walClientClass = (Class<LocalWALClient>) Class
@@ -442,11 +442,19 @@ public class WALManagerImpl extends WALManager {
 
 	@Override
 	public String getReplicaLeader(String routeKey) {
-		Replica replica = localReplicaTable.get(routeKey);
+		List<Replica> replica = routeTable.get(routeKey);
 		if (replica != null) {
-			return replica.getLeaderNodeKey();
+			return replica.get(0).getLeaderNodeKey();
 		}
 		return null;
+	}
+
+	@SuppressWarnings("unchecked")
+	@Override
+	public void setRouteTable(Object newValue) {
+		write.lock();
+		routeTable = (Map<String, List<Replica>>) newValue;
+		write.unlock();
 	}
 
 }
