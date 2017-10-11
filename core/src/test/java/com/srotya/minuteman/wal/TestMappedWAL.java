@@ -15,7 +15,9 @@
  */
 package com.srotya.minuteman.wal;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.io.File;
 import java.io.IOException;
@@ -33,6 +35,9 @@ import org.junit.Test;
 
 import com.srotya.minuteman.utils.FileUtils;
 
+/**
+ * @author ambud
+ */
 public class TestMappedWAL {
 
 	private ScheduledExecutorService es = Executors.newScheduledThreadPool(1);
@@ -48,7 +53,7 @@ public class TestMappedWAL {
 		wal.configure(conf, es);
 		File[] listFiles = new File(walDir).listFiles();
 		assertEquals(2, listFiles.length);
-		assertEquals(MappedWAL.getSegmentFileName(walDir, 1), listFiles[1].getPath().replace("\\", "/"));
+		assertEquals(MappedWAL.getSegmentFileName(walDir, 0), listFiles[1].getPath().replace("\\", "/"));
 		assertEquals(1024 * 1024 * 2, listFiles[1].length());
 	}
 
@@ -67,7 +72,7 @@ public class TestMappedWAL {
 		}
 		wal.flush();
 		int expectedBytes = 11 * 1000 + 4;
-		RandomAccessFile raf = new RandomAccessFile(MappedWAL.getSegmentFileName(walDir, 1), "r");
+		RandomAccessFile raf = new RandomAccessFile(MappedWAL.getSegmentFileName(walDir, 0), "r");
 		MappedByteBuffer map = raf.getChannel().map(MapMode.READ_ONLY, 0, expectedBytes);
 		raf.close();
 		map.getInt();
@@ -97,7 +102,7 @@ public class TestMappedWAL {
 			String str = ("test" + String.format("%03d", i));
 			wal.write(str.getBytes(), false);
 		}
-		WALRead read = wal.read("local", 4, 100000, 1, false);
+		WALRead read = wal.read("local", 4, 100000, false);
 		List<byte[]> data = read.getData();
 		for (int i = 0; i < 1000; i++) {
 			ByteBuffer buf = ByteBuffer.wrap(data.get(i));
@@ -134,11 +139,12 @@ public class TestMappedWAL {
 		wal.flush();
 		assertEquals(total, wal.getOffset());
 		// let ISR check thread mark this follower as not ISR
-		WALRead read = wal.read("f1", 4, 1024 * 1024, 1, false);
-		assertEquals(7000, read.getData().size() * 7);
+		WALRead read = wal.read("f1", 4L, 1024 * 1024, false);
+		assertEquals(1000, read.getData().size());
 		assertEquals(false, wal.isIsr("f1"));
 		assertEquals(4, wal.getFollowerOffset("f1"));
 		assertEquals(0, read.getCommitOffset());
+		assertEquals(11004, read.getNextOffset());
 		total = 0;
 		for (int i = 0; i < 1000; i++) {
 			String str = ("test" + String.format("%03d", i));
@@ -148,17 +154,17 @@ public class TestMappedWAL {
 		wal.flush();
 		Thread.sleep(1000);
 		assertEquals(false, wal.isIsr("f1"));
-		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, read.getSegmentId(), false);
+		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, false);
 		assertEquals(1000, read.getData().size());
 		assertEquals(11000 + 4, wal.getFollowerOffset("f1"));
 		total = 11000 * 2;
 		total += 4;
-		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, read.getSegmentId(), false);
+		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, false);
 		// let ISR check thread run and mark this follower as ISR
 		Thread.sleep(1000);
 		assertTrue(read.getData() == null);
 		assertEquals(total, wal.getFollowerOffset("f1"));
-		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, read.getSegmentId(), false);
+		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, false);
 		assertTrue(read.getData() == null);
 		assertEquals(total, wal.getFollowerOffset("f1"));
 		assertEquals(total, read.getCommitOffset());
@@ -167,7 +173,7 @@ public class TestMappedWAL {
 			String str = ("test" + String.format("%03d", i));
 			wal.write(str.getBytes(), false);
 		}
-		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, 1, false);
+		read = wal.read("f1", read.getNextOffset(), 1024 * 1024, false);
 		assertEquals(total, read.getCommitOffset());
 	}
 
@@ -185,7 +191,7 @@ public class TestMappedWAL {
 			wal.write(str.getBytes(), false);
 		}
 		assertEquals(5, wal.getSegmentCounter());
-		WALRead read = wal.read("local", 4, 10000, 1, false);
+		WALRead read = wal.read("local", 4, 10000, false);
 		List<byte[]> data = read.getData();
 		// buf.getInt();
 		assertEquals(454, data.size());
@@ -202,9 +208,9 @@ public class TestMappedWAL {
 			}
 		}
 		assertEquals(-1, wal.getFollowerOffset("f1"));
-		assertEquals(2, read.getSegmentId());
-		assertEquals(4, read.getNextOffset());
-		read = wal.read("local", read.getNextOffset(), 10000, read.getSegmentId(), false);
+		assertEquals(5004, read.getNextOffset());
+		read = wal.read("local", read.getNextOffset(), 10000, false);
+		assertEquals(10004, read.getNextOffset());
 		data = read.getData();
 		assertEquals(454, read.getData().size());
 		for (int i = 0; i < 454; i++) {
@@ -218,11 +224,14 @@ public class TestMappedWAL {
 				throw e;
 			}
 		}
-		read = wal.read("local", read.getNextOffset(), 10000, read.getSegmentId(), false);
-		read = wal.read("local", read.getNextOffset(), 10000, read.getSegmentId(), false);
-		assertEquals(5, read.getSegmentId());
-		read = wal.read("local", 4, 10000, 0, false);
-		assertEquals(1, read.getSegmentId());
+		read = wal.read("local", read.getNextOffset(), 10000, false);
+		assertEquals(15004, read.getNextOffset());
+		read = wal.read("local", read.getNextOffset(), 10000, false);
+		assertEquals(20004, read.getNextOffset());
+		// assertEquals(5, read.getSegmentId());
+		read = wal.read("local", 4, 10000, false);
+		assertEquals(5004, read.getNextOffset());
+		// assertEquals(1, read.getSegmentId());
 	}
 
 	@Test
@@ -239,14 +248,14 @@ public class TestMappedWAL {
 			String str = ("test" + String.format("%03d", i));
 			wal.write(str.getBytes(), false);
 		}
-		wal.read("f2", 4, 100, 1, false);
+		wal.read("f2", 4, 100, false);
 		wal.close();
 		es1.shutdownNow();
 		es1 = Executors.newScheduledThreadPool(1);
 		wal = new MappedWAL();
 		wal.configure(conf, es1);
 		assertEquals(5, wal.getSegmentCounter());
-		wal.read("f2", 4, 100, 1, false);
+		wal.read("f2", 4, 100, false);
 		assertEquals(1, wal.getFollowers().size());
 	}
 }

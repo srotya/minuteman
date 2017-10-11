@@ -22,7 +22,6 @@ import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel.MapMode;
-import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -63,8 +62,7 @@ public class MappedWAL implements WAL {
 	private int maxCounter;
 	private int isrThreshold;
 	// TODO potential bug since commit file is not tracked
-	private volatile int commitOffset = 0;
-	private volatile int commitSegment = 0;
+	private volatile long commitOffset = 0;
 	private AtomicBoolean walDeletion;
 	private RandomAccessFile metaraf;
 	private MappedByteBuffer metaBuf;
@@ -95,16 +93,17 @@ public class MappedWAL implements WAL {
 		logger.info("WAL deletion is set to:" + walDeletion.get());
 		// isr polling thread
 		es.scheduleAtFixedRate(() -> {
+			long currentOffset = (currentWrite.position() + (long) ((segmentCounter - 1) * segmentSize));
 			for (Entry<String, MappedWALFollower> entry : followerMap.entrySet()) {
 				MappedWALFollower follower = entry.getValue();
 				String followerId = entry.getKey();
-				if (segmentCounter != follower.getSegmentId()
-						|| currentWrite.position() - follower.getOffset() > isrThreshold) {
+				if (currentOffset - follower.getOffset() > isrThreshold) {
 					follower.setIsr(false);
-					logger.fine("Follower no longer an ISR:" + followerId + " wal:" + walDirectory);
+					logger.info("Follower no longer an ISR:" + followerId + " wal:" + walDirectory + " current offset:"
+							+ currentOffset + " follower:" + follower.getOffset());
 				} else {
 					follower.setIsr(true);
-					logger.fine("Follower now an ISR:" + followerId + " wal:" + walDirectory);
+					logger.info("Follower now an ISR:" + followerId + " wal:" + walDirectory);
 				}
 			}
 		}, Integer.parseInt(conf.getOrDefault(WAL_ISRCHECK_DELAY, "1")),
@@ -125,11 +124,11 @@ public class MappedWAL implements WAL {
 		metaBuf = metaraf.getChannel().map(MapMode.READ_WRITE, 0, 1024);
 		if (forward) {
 			logger.info("Found md file with commit offset");
-			commitOffset = metaBuf.getInt();
-			commitSegment = metaBuf.getInt();
+			commitOffset = metaBuf.getLong();
+			// commitSegment = metaBuf.getInt();
 		} else {
-			metaBuf.putInt(0);
-			metaBuf.putInt(0);
+			metaBuf.putLong(0);
+			// metaBuf.putInt(0);
 		}
 	}
 
@@ -137,7 +136,7 @@ public class MappedWAL implements WAL {
 	public void flush() throws IOException {
 		write.lock();
 		if (currentWrite != null) {
-			logger.fine("Flushing buffer to disk");
+			logger.finer("Flushing buffer to disk");
 			currentWrite.force();
 		}
 		write.unlock();
@@ -180,7 +179,7 @@ public class MappedWAL implements WAL {
 				flush();
 				counter = 0;
 			}
-			logger.fine("Wrote data:" + data.length + " at new offset:" + currentWrite.position() + " new file:"
+			logger.finest("Wrote data:" + data.length + " at new offset:" + currentWrite.position() + " new file:"
 					+ segmentCounter);
 		} finally {
 			write.unlock();
@@ -188,8 +187,7 @@ public class MappedWAL implements WAL {
 	}
 
 	@Override
-	public WALRead read(String followerId, int offset, int maxBytes, int segmentId, boolean readCommitted)
-			throws IOException {
+	public WALRead read(String followerId, long requestOffset, int maxBytes, boolean readCommitted) throws IOException {
 		read.lock();
 		MappedWALFollower follower = followerMap.get(followerId);
 		if (follower == null) {
@@ -199,13 +197,14 @@ public class MappedWAL implements WAL {
 		}
 		read.unlock();
 		WALRead readData = new WALRead();
-		if (segmentId != follower.getSegmentId()) {
-			logger.fine("Follower file(" + follower.getSegmentId() + ") is doesn't match requested file id(" + segmentId
+		int followerSegmentId = rawOffsetToSegmentId(follower.getOffset());
+		int segmentId = rawOffsetToSegmentId(requestOffset);
+		if (segmentId != followerSegmentId) {
+			logger.fine("Follower file(" + followerSegmentId + ") is doesn't match requested file id(" + segmentId
 					+ "), reseting buffer & file id");
 			follower.setBuf(null);
-			follower.setSegmentId(segmentId);
 			if (follower.getReader() != null) {
-				logger.fine("Follower(" + followerId + ") has existing open file, now closing");
+				logger.finer("Follower(" + followerId + ") has existing open file, now closing");
 				follower.getReader().close();
 			}
 			deleteWALSegments();
@@ -213,10 +212,10 @@ public class MappedWAL implements WAL {
 		if (follower.getBuf() == null) {
 			File file = new File(getSegmentFileName(walDirectory, segmentId));
 			if (!file.exists() && segmentId < segmentCounter) {
-				logger.fine("Follower(" + followerId + ") requested file(" + segmentId + "/" + file.getAbsolutePath()
+				logger.warning("Follower(" + followerId + ") requested file(" + segmentId + "=" + file.getAbsolutePath()
 						+ ") doesn't exist, incrementing");
-				readData.setSegmentId(segmentId + 1);
-				readData.setNextOffset(0);
+				long next = segmentId * segmentSize + Integer.BYTES;
+				readData.setNextOffset(next);
 				return readData;
 			}
 			logger.fine("Follower(" + followerId + "), opening new wal segment to read:" + file.getAbsolutePath());
@@ -226,22 +225,17 @@ public class MappedWAL implements WAL {
 			// skip the header
 			follower.getBuf().getInt();
 		}
-		follower.setOffset(offset);
+		follower.setOffset(requestOffset);
 		int pos = 4;
 		if (readCommitted) {
-			// if (segmentId > commitSegment) {
-			// // correct segmentId and let follower know about it
-			// // follower should make the correct request in the next request
-			// logger.info("\n\nFixing commit segment " + segmentId + " " + commitSegment +
-			// "\n\n");
-			// readData.setSegmentId(commitSegment);
-			// return readData;
-			// }
-			// pos = commitOffset;
+			pos = rawOffsetToSegmentOffset(commitOffset);
+			logger.finest("Reading committed offset:" + pos);
 		} else {
 			pos = follower.getBuf().getInt(0);
+			logger.finest("Reading uncommitted offset:" + pos);
 		}
 		ByteBuffer buf = follower.getBuf();
+		int offset = rawOffsetToSegmentOffset(requestOffset);
 		buf.position(offset);
 		if (offset < pos) {
 			// int length = maxBytes < (pos - offset) ? maxBytes : (pos - offset);
@@ -257,33 +251,33 @@ public class MappedWAL implements WAL {
 				length += currPayloadLength + Integer.BYTES;
 				temp = offset + length;
 			} while (length <= maxBytes && temp < pos);
-			// System.out.println("//error:" + offset + " " + length + " " + buf.remaining()
-			// + " " + temp);
+			logger.finest("//error:" + offset + " l:" + length + " r:" + buf.remaining() + " t:" + temp + " r:"
+					+ requestOffset + " s:" + segmentId + " p:" + pos + " s:" + data.size() + " b:" + buf.position());
 			readData.setData(data);
 		}
-		if (pos == buf.position() && segmentCounter > follower.getSegmentId()) {
-			int newSegment = follower.getSegmentId() + 1;
-			logger.fine("Follower(" + followerId
-					+ ") doesn't have any more data to read from this segment, incrementing segment(" + newSegment
-					+ "); segmentCounter:" + segmentCounter);
-			readData.setSegmentId(newSegment);
-			readData.setNextOffset(Integer.BYTES);
+		if (pos == buf.position() && segmentCounter - 1 > segmentId) {
+			long next = (long) (segmentId + 1) * segmentSize + Integer.BYTES;
+			logger.finer("Follower(" + followerId
+					+ ") doesn't have any more data to read from this segment, incrementing segment(" + segmentId
+					+ "); segmentCounter:" + segmentCounter + " offset(" + requestOffset + ") moving to next offset("
+					+ next + ")");
+			readData.setNextOffset(next);
 		} else {
-			readData.setSegmentId(segmentId);
-			readData.setNextOffset(buf.position());
+			long next = (long) (segmentId) * segmentSize + buf.position();
+			logger.finer("Follower(" + followerId + ") has more data to read from this(" + segmentId
+					+ ") segment; moving to next segment's offset(" + next + ")");
+			readData.setNextOffset(next);
 		}
 		updateMinOffset();
 		readData.setCommitOffset(getCommitOffset());
-		readData.setCommitSegment(commitSegment);
 		return readData;
 	}
 
 	private void updateMinOffset() {
 		write.lock();
-		Entry<Integer, Integer> minimumOffset = getMinimumOffset();
-		if (minimumOffset.getValue() != Integer.MAX_VALUE) {
-			setCommitSegment(minimumOffset.getKey());
-			setCommitOffset(minimumOffset.getValue());
+		long minimumOffset = getMinimumOffset();
+		if (minimumOffset != Long.MAX_VALUE) {
+			setCommitOffset(minimumOffset);
 		}
 		write.unlock();
 	}
@@ -303,19 +297,19 @@ public class MappedWAL implements WAL {
 				segmentCounter = getLastSegmentCounter(walDirectory);
 				if (segmentCounter > 1) {
 					forward = true;
+					logger.info("Existing segment file detected; segment counter set to:" + segmentCounter);
 				}
-			} else {
-				segmentCounter++;
 			}
 			raf = new RandomAccessFile(new File(getSegmentFileName(walDirectory, segmentCounter)), "rwd");
 			currentWrite = raf.getChannel().map(MapMode.READ_WRITE, 0, segmentSize);
+			logger.info("Creating new segment file:" + getSegmentFileName(walDirectory, segmentCounter));
 			if (forward) {
 				// if this segment file already exists then forward the cursor
 				// to the
 				// latest committed location;
 				int pos = currentWrite.getInt(0);
 				if (currentWrite.limit() > getCommitOffset()) {
-					currentWrite.position(getCommitOffset());
+					currentWrite.position(rawOffsetToSegmentOffset(getCommitOffset()));
 				} else {
 					currentWrite.position(pos);
 				}
@@ -327,8 +321,19 @@ public class MappedWAL implements WAL {
 				currentWrite.putInt(0);
 			}
 			logger.fine("Rotating segment file:" + getSegmentFileName(walDirectory, segmentCounter));
+			segmentCounter++;
 			write.unlock();
 		}
+	}
+
+	// TODO note that this can cause issues if the segment is pre-maturely
+	// terminated; need to run the math validation for whether or not this will work
+	public int rawOffsetToSegmentOffset(long offset) {
+		return (int) (offset % segmentSize);
+	}
+
+	public int rawOffsetToSegmentId(long offset) {
+		return (int) (offset / segmentSize);
 	}
 
 	public static String getSegmentFileName(String walDirectory, int segmentCounter) {
@@ -346,7 +351,7 @@ public class MappedWAL implements WAL {
 		if (files.length > 0) {
 			return Integer.parseInt(files[files.length - 1].getName().replace(".wal", ""));
 		} else {
-			return 1;
+			return 0;
 		}
 	}
 
@@ -356,26 +361,26 @@ public class MappedWAL implements WAL {
 	}
 
 	@Override
-	public int getCurrentOffset() {
+	public long getCurrentOffset() {
 		return currentWrite.position();
 	}
 
 	@Override
-	public int getCommitOffset() {
+	public long getCommitOffset() {
 		return commitOffset;
 	}
 
 	@Override
-	public void setCommitOffset(int commitOffset) {
+	public void setCommitOffset(long commitOffset) {
 		write.lock();
 		logger.finer("Updated commit offset:" + commitOffset);
 		this.commitOffset = commitOffset;
-		metaBuf.putInt(0, commitOffset);
+		metaBuf.putLong(0, commitOffset);
 		write.unlock();
 	}
 
 	@Override
-	public int getFollowerOffset(String followerId) {
+	public long getFollowerOffset(String followerId) {
 		MappedWALFollower mappedWALFollower = followerMap.get(followerId);
 		if (mappedWALFollower != null) {
 			return mappedWALFollower.getOffset();
@@ -383,22 +388,24 @@ public class MappedWAL implements WAL {
 		return -1;
 	}
 
-	private Entry<Integer, Integer> getMinimumOffset() {
+	private long getMinimumOffset() {
+		logger.finest("Getting minimum offset among followers");
 		String[] array = followerMap.keySet().toArray(new String[0]);
-		int offsetMarker = Integer.MAX_VALUE;
-		int segmentCounter = Integer.MAX_VALUE;
+		long offsetMarker = Long.MAX_VALUE;
 		for (String tracker : array) {
 			MappedWALFollower follower = followerMap.get(tracker);
 			if (!follower.isIsr()) {
+				logger.finest("Ignoring(" + tracker + ") since it's not an ISR offset:" + follower.getOffset()
+						+ " current:" + currentWrite.position());
 				continue;
 			}
-			int offset = follower.getOffset();
+			long offset = follower.getOffset();
 			if (offset < offsetMarker) {
 				offsetMarker = offset;
-				segmentCounter = follower.getSegmentId();
 			}
 		}
-		return new AbstractMap.SimpleEntry<Integer, Integer>(segmentCounter, offsetMarker);
+		logger.finest("Commit offset:" + offsetMarker);
+		return offsetMarker;
 	}
 
 	@Override
@@ -421,17 +428,17 @@ public class MappedWAL implements WAL {
 		logger.fine("Follower Count:" + array.length);
 		for (String tracker : array) {
 			MappedWALFollower follower = followerMap.get(tracker);
-			int fId = follower.getSegmentId() - 1;
+			int fId = rawOffsetToSegmentId(follower.getOffset()) - 1;
 			if (fId < segmentMarker) {
 				segmentMarker = fId;
 			}
 		}
-		logger.info("Minimum segment to that can be deleted:" + segmentMarker);
+		logger.fine("Minimum segment to that can be deleted:" + segmentMarker);
 		if (segmentMarker == segmentCounter || segmentMarker == Integer.MAX_VALUE) {
 			logger.fine("Minimum segment is also the current segment, ignoring delete");
 		} else {
 			logger.fine("Segment compaction, will delete:" + segmentMarker + " files");
-			for (int i = 1; i < segmentMarker; i++) {
+			for (int i = 0; i < segmentMarker; i++) {
 				new File(getSegmentFileName(walDirectory, i)).delete();
 				logger.fine("Segment compaction, deleting file:" + getSegmentFileName(walDirectory, i));
 			}
@@ -449,23 +456,9 @@ public class MappedWAL implements WAL {
 		return followerMap.get(followerId).isr;
 	}
 
-	@Override
-	public int getCommitSegment() {
-		return commitSegment;
-	}
-
-	@Override
-	public void setCommitSegment(int commitSegment) {
-		write.lock();
-		this.commitSegment = commitSegment;
-		metaBuf.putInt(Integer.BYTES, commitSegment);
-		write.unlock();
-	}
-
 	private class MappedWALFollower {
 
-		private volatile int segmentId;
-		private volatile int offset;
+		private volatile long offset;
 		private RandomAccessFile reader;
 		private MappedByteBuffer buf;
 		private volatile boolean isr;
@@ -501,24 +494,9 @@ public class MappedWAL implements WAL {
 		}
 
 		/**
-		 * @return the fileId
-		 */
-		public int getSegmentId() {
-			return segmentId;
-		}
-
-		/**
-		 * @param segmentId
-		 *            the segmentId to set
-		 */
-		public void setSegmentId(int segmentId) {
-			this.segmentId = segmentId;
-		}
-
-		/**
 		 * @return the offset
 		 */
-		public int getOffset() {
+		public long getOffset() {
 			return offset;
 		}
 
@@ -526,7 +504,7 @@ public class MappedWAL implements WAL {
 		 * @param offset
 		 *            the offset to set
 		 */
-		public void setOffset(int offset) {
+		public void setOffset(long offset) {
 			this.offset = offset;
 		}
 

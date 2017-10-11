@@ -66,7 +66,7 @@ public class RemoteWALClient extends WALClient {
 			loopCounter.incrementAndGet();
 			logger.fine("CLIENT: Requesting data:" + offset);
 			long ts = System.currentTimeMillis();
-			BatchDataRequest request = BatchDataRequest.newBuilder().setSegmentId(segmentId).setNodeId(nodeId)
+			BatchDataRequest request = BatchDataRequest.newBuilder().setNodeId(nodeId)
 					.setOffset(offset).setMaxBytes(maxFetchBytes).setRouteKey(routeKey).build();
 			BatchDataResponse response = stub.requestBatchReplication(request);
 			ts = System.currentTimeMillis() - ts;
@@ -86,16 +86,11 @@ public class RemoteWALClient extends WALClient {
 				ts = System.currentTimeMillis() - ts;
 				metricWriteTime.getAndAdd(ts);
 				logger.fine("CLIENT: Client received:" + response.getDataList().size() + " messages \t fileId:"
-						+ response.getSegmentId());
+						+ response.getNextOffset());
 				counter.addAndGet(response.getDataList().size());
 				wal.setCommitOffset(response.getCommitOffset());
-				wal.setCommitSegment(response.getCommitSegment());
-			}
-			if (response.getSegmentId() > segmentId) {
-				logger.fine("CLIENT: File rotation requested:" + offset + "\t" + segmentId);
 			}
 			offset = response.getNextOffset();
-			segmentId = response.getSegmentId();
 		} catch (Exception e) {
 			logger.log(Level.SEVERE, "Failure to replicate WAL", e);
 			try {
@@ -107,12 +102,8 @@ public class RemoteWALClient extends WALClient {
 		}
 	}
 
-	public int getPos() {
+	public long getPos() {
 		return wal.getCurrentOffset();
-	}
-
-	public int getSegmentCounter() {
-		return wal.getSegmentCounter();
 	}
 
 	public WAL getWal() {

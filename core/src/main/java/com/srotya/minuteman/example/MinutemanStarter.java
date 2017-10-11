@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.srotya.minuteman;
+package com.srotya.minuteman.example;
 
 import java.io.File;
 import java.io.IOException;
@@ -34,6 +34,7 @@ import com.srotya.minuteman.rpc.GenericResponse;
 import com.srotya.minuteman.rpc.ReplicationServiceGrpc;
 import com.srotya.minuteman.rpc.ReplicationServiceGrpc.ReplicationServiceBlockingStub;
 import com.srotya.minuteman.utils.FileUtils;
+import com.srotya.minuteman.wal.LocalWALClient;
 import com.srotya.minuteman.wal.WAL;
 import com.srotya.minuteman.wal.WALClient;
 
@@ -44,7 +45,7 @@ public class MinutemanStarter {
 		for (int i = 0; i < 6; i++) {
 			string += string;
 		}
-		System.out.println(string.length());
+		System.out.println("Message size:" + string.length());
 		// System.exit(0);
 		FileUtils.delete(new File("target/node" + args[0]));
 		ClusterConnector connector;
@@ -53,7 +54,8 @@ public class MinutemanStarter {
 		conf.put("cluster.atomix.bootstrap", args[1]);
 		conf.put("cluster.grpc.port", args[2]);
 		conf.put(WAL.WAL_ISR_THRESHOLD, String.valueOf(1024 * 1024 * 64));
-		conf.put(WALClient.MAX_FETCH_BYTES, String.valueOf(1024 * 1024 * 2));
+		conf.put(WALClient.MAX_FETCH_BYTES, String.valueOf(1024 * 1024 * 8));
+		conf.put(LocalWALClient.WAL_LOCAL_READ_MODE, LocalWALClient.COMMITTED);
 		conf.put("wal.dir", "target/node" + args[0]);
 		try {
 			connector = new AtomixConnector();
@@ -87,6 +89,7 @@ public class MinutemanStarter {
 					ts = System.currentTimeMillis() - ts;
 					System.out.println("written 10k:" + string.length() * i + " bytes ts:" + "\t" + ts / 1000);
 					ts = System.currentTimeMillis();
+					Thread.sleep(500);
 				}
 			}
 		}

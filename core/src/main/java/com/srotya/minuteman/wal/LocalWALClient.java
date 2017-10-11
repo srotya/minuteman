@@ -27,6 +27,8 @@ import java.util.logging.Logger;
  */
 public class LocalWALClient extends WALClient {
 
+	public static final String UNCOMMITTED = "uncommitted";
+	public static final String COMMITTED = "committed";
 	public static final String WAL_LOCAL_READ_MODE = "wal.local.read.mode";
 	private static final Logger logger = Logger.getLogger(LocalWALClient.class.getName());
 	private AtomicInteger counter;
@@ -39,12 +41,12 @@ public class LocalWALClient extends WALClient {
 			throws IOException {
 		super.configure(conf, nodeId, localWAL);
 		this.counter = new AtomicInteger(0);
-		String readMode = conf.getOrDefault(WAL_LOCAL_READ_MODE, "uncommitted").toLowerCase();
+		String readMode = conf.getOrDefault(WAL_LOCAL_READ_MODE, UNCOMMITTED).toLowerCase();
 		switch (readMode) {
-		case "committed":
+		case COMMITTED:
 			readCommitted = true;
 			break;
-		case "uncommitted":
+		case UNCOMMITTED:
 			readCommitted = false;
 			break;
 		}
@@ -55,20 +57,16 @@ public class LocalWALClient extends WALClient {
 	@Override
 	public void iterate() {
 		try {
-			WALRead read = wal.read(nodeId, offset, maxFetchBytes, segmentId, readCommitted);
+			WALRead read = wal.read(nodeId, offset, maxFetchBytes, readCommitted);
 			if (read.getData() == null || read.getData().isEmpty()) {
 				Thread.sleep(retryWait);
 			} else {
 				logger.fine("Received read data:" + read.getData().size() + "\t" + offset);
 				processData(read.getData());
 				counter.incrementAndGet();
-				logger.fine("Read:" + read.getData().size() + "\t\t\t" + offset + "\t\t\t" + wal.getCommitOffset()
-						+ "\t\t\t" + segmentId);
+				logger.fine("Read:" + read.getData().size() + "\t\t\t" + offset + "\t\t\t" + wal.getCommitOffset());
 			}
 			offset = read.getNextOffset();
-			if (read.getSegmentId() != segmentId) {
-				segmentId = read.getSegmentId();
-			}
 		} catch (Exception e) {
 			logger.log(Level.SEVERE, "Failure to replay WAL locally", e);
 			try {
@@ -79,12 +77,8 @@ public class LocalWALClient extends WALClient {
 		}
 	}
 
-	public int getPos() {
+	public long getPos() {
 		return wal.getCurrentOffset();
-	}
-
-	public int getSegmentCounter() {
-		return wal.getSegmentCounter();
 	}
 
 	public WAL getWal() {

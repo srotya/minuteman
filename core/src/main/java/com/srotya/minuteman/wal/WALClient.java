@@ -33,8 +33,7 @@ public abstract class WALClient implements Runnable{
 	protected String nodeId;
 	protected WAL wal;
 	protected int maxFetchBytes;
-	protected int offset;
-	protected int segmentId;
+	protected long offset;
 
 	public abstract void iterate();
 
@@ -57,7 +56,6 @@ public abstract class WALClient implements Runnable{
 		this.wal = localWAL;
 		this.nodeId = nodeId;
 		this.offset = wal.getCurrentOffset();
-		this.segmentId = wal.getSegmentCounter();
 		this.maxFetchBytes = Integer.parseInt(conf.getOrDefault(MAX_FETCH_BYTES, String.valueOf(1024 * 1024)));
 		return this;
 	}
