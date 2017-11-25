@@ -54,7 +54,7 @@ public class MinutemanStarter {
 		conf.put("cluster.atomix.bootstrap", args[1]);
 		conf.put("cluster.grpc.port", args[2]);
 		conf.put(WAL.WAL_ISR_THRESHOLD, String.valueOf(1024 * 1024 * 64));
-		conf.put(WALClient.MAX_FETCH_BYTES, String.valueOf(1024 * 1024 * 8));
+		conf.put(WALClient.MAX_FETCH_BYTES, String.valueOf(1024 * 1024 * 2));
 		conf.put(LocalWALClient.WAL_LOCAL_READ_MODE, LocalWALClient.COMMITTED);
 		conf.put("wal.dir", "target/node" + args[0]);
 		try {
@@ -81,7 +81,7 @@ public class MinutemanStarter {
 
 			for (long i = 0; i < 10_000_000; i++) {
 				GenericResponse response = ch.writeData(DataRequest.newBuilder().setRouteKey(nextLine)
-						.setData(ByteString.copyFrom(string.getBytes())).build());
+						.setData(ByteString.copyFrom((string + i).getBytes())).build());
 				if (response.getResponseCode() != 200) {
 					System.out.println(response.getResponseString() + "\t" + i);
 				}
