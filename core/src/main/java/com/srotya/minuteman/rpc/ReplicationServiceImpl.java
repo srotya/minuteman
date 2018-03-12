@@ -57,15 +57,13 @@ public class ReplicationServiceImpl extends ReplicationServiceImplBase {
 		try {
 			WAL wal = mgr.getWAL(request.getRouteKey());
 			if (wal != null) {
-				WALRead read = wal.read(request.getNodeId(), request.getOffset(), request.getMaxBytes(),
-						request.getSegmentId(), false);
+				WALRead read = wal.read(request.getNodeId(), request.getOffset(), request.getMaxBytes(), false);
 				builder.setNextOffset(read.getNextOffset()).setCommitOffset(read.getCommitOffset());
 				if (read.getData() != null) {
 					for (byte[] data : read.getData()) {
 						builder.addData(ByteString.copyFrom(data));
 					}
 				}
-				builder.setSegmentId(read.getSegmentId());
 				responseObserver.onNext(builder.build());
 			} else {
 				builder.setNextOffset(-1).setResponseCode(404);

@@ -86,10 +86,9 @@ message RouteResponse {
 
 message BatchDataRequest {
 
-	int32 offset = 1;
+	int64 offset = 1;
 	string nodeId = 2;
 	int32 maxBytes = 3;
-	int32 segmentId = 4;
 	string routeKey = 5; 
 
 }
@@ -97,10 +96,8 @@ message BatchDataRequest {
 message BatchDataResponse {
 
 	repeated bytes data = 1;
-	int32 nextOffset = 2;
-	int32 segmentId = 3;
+	int64 nextOffset = 2;
 	int32 responseCode = 4;
-	int32 commitOffset = 5;
-	int32 commitSegment = 6;
+	int64 commitOffset = 5;
 
 }

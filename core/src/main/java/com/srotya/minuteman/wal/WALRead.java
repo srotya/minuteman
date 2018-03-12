@@ -22,11 +22,9 @@ import java.util.List;
  */
 public class WALRead {
 
-	private int nextOffset;
-	private int commitOffset;
-	private int commitSegment;
+	private long nextOffset;
+	private long commitOffset;
 	private List<byte[]> data;
-	private int segmentId;
 	
 	public WALRead() {
 	}
@@ -34,19 +32,15 @@ public class WALRead {
 	/**
 	 * @return the nextOffset
 	 */
-	public int getNextOffset() {
+	public long getNextOffset() {
 		return nextOffset;
-	}
-
-	public void setSegmentId(int segmentCounter) {
-		segmentId = segmentCounter;
 	}
 
 	/**
 	 * @param nextOffset
 	 *            the nextOffset to set
 	 */
-	public WALRead setNextOffset(int nextOffset) {
+	public WALRead setNextOffset(long nextOffset) {
 		this.nextOffset = nextOffset;
 		return this;
 	}
@@ -67,36 +61,19 @@ public class WALRead {
 		return this;
 	}
 
-	public int getSegmentId() {
-		return segmentId;
-	}
-
 	/**
 	 * @return the commitOffset
 	 */
-	public int getCommitOffset() {
+	public long getCommitOffset() {
 		return commitOffset;
 	}
 
 	/**
 	 * @param commitOffset the commitOffset to set
 	 */
-	public void setCommitOffset(int commitOffset) {
+	public void setCommitOffset(long commitOffset) {
 		this.commitOffset = commitOffset;
 	}
 
-	/**
-	 * @return the commitSegment
-	 */
-	public int getCommitSegment() {
-		return commitSegment;
-	}
-
-	/**
-	 * @param commitSegment the commitSegment to set
-	 */
-	public void setCommitSegment(int commitSegment) {
-		this.commitSegment = commitSegment;
-	}
 
 }

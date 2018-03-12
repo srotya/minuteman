@@ -43,7 +43,7 @@ import com.srotya.minuteman.wal.WAL;
 
 import io.grpc.DecompressorRegistry;
 import io.grpc.Server;
-import io.grpc.ServerBuilder;
+import io.grpc.netty.NettyServerBuilder;
 
 /**
  * @author ambud
@@ -78,7 +78,7 @@ public class WALManagerImpl extends WALManager {
 		walClientClass = (Class<LocalWALClient>) Class
 				.forName(conf.getOrDefault(WAL_CLIENT_CLASS, LocalWALClient.class.getName()));
 		connector.initializeRouterHooks(this);
-		server = ServerBuilder.forPort(getPort()).decompressorRegistry(DecompressorRegistry.getDefaultInstance())
+		server = NettyServerBuilder.forPort(getPort()).decompressorRegistry(DecompressorRegistry.getDefaultInstance())
 				.addService(new ReplicationServiceImpl(this)).build().start();
 		logger.info("Listening for GRPC requests on port:" + getPort());
 		isrUpdateFrequency = Integer.parseInt(conf.getOrDefault(WAL.WAL_ISRCHECK_FREQUENCY, "10"));
@@ -98,7 +98,7 @@ public class WALManagerImpl extends WALManager {
 						GenericResponse response = stub.updateIsr(
 								IsrUpdateRequest.newBuilder().setRouteKey(entry.getKey()).putAllIsrMap(isrMap).build());
 						if (response.getResponseCode() == 200) {
-							logger.info("Updated ISRs with coordinator for routeKey:" + entry.getKey());
+							logger.fine("Updated ISRs with coordinator for routeKey:" + entry.getKey());
 						} else {
 							logger.severe(
 									"ISR update with coordinator failed for routeKey:" + entry.getKey() + " reason:"

@@ -43,28 +43,24 @@ public interface WAL {
 
 	void write(byte[] data, boolean flush) throws IOException;
 
-	WALRead read(String followerId, int offset, int maxBytes, int fileId, boolean readCommitted) throws IOException;
+	WALRead read(String followerId, long offset, int maxBytes, boolean readCommitted) throws IOException;
 
-	int getSegmentCounter();
+	long getCurrentOffset();
 
-	int getCurrentOffset();
+	long getFollowerOffset(String followerId);
 
-	int getFollowerOffset(String followerId);
-	
 	Collection<String> getFollowers();
-	
-	void setCommitOffset(int commitOffset);
 
-	int getCommitOffset();
-	
-	int getCommitSegment();
-	
-	void setCommitSegment(int commitSegment);
+	void setCommitOffset(long commitOffset);
+
+	long getCommitOffset();
 
 	boolean isIsr(String followerId);
 
 	void setWALDeletion(boolean status);
 
 	void close() throws IOException;
+
+	int getSegmentCounter();
 
 }
