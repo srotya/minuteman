@@ -26,6 +26,8 @@ import com.srotya.minuteman.wal.MappedWAL;
 import com.srotya.minuteman.wal.WAL;
 
 /**
+ * Manages {@link WAL}
+ * 
  * @author ambud
  */
 public abstract class WALManager {
