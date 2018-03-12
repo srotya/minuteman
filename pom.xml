@@ -8,7 +8,7 @@
   </parent>
   <groupId>com.srotya.minuteman</groupId>
   <artifactId>minuteman-parent</artifactId>
-  <version>0.0.3</version>
+  <version>0.0.4-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>minuteman</name>
   <description>Embeddable Replicated WAL</description>
@@ -162,6 +162,6 @@
     <connection>scm:git:git@github.com:srotya/minuteman.git</connection>
     <developerConnection>scm:git:git@github.com:srotya/minuteman.git</developerConnection>
     <url>https://github.com/srotya/minuteman.git</url>
-    <tag>minuteman-parent-0.0.3</tag>
+    <tag>HEAD</tag>
   </scm>
 </project>
